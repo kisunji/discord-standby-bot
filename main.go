@@ -151,7 +151,7 @@ func checkStandbyCount(s *discordgo.Session) {
 
 		if activeMessageID != "" {
 			if err := s.ChannelMessageDelete(ChannelID, activeMessageID); err != nil {
-				log.Printf("error deleting active message: %v", err)
+				log.Printf("error deleting active message: %v\n", err)
 			}
 		}
 		activeMessageID = ""
