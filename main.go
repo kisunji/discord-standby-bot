@@ -16,6 +16,7 @@ var (
 	AppID         = *flag.String("app-id", "", "App ID")
 	GuildID       = *flag.String("guild-id", "", "Guild ID (Server ID)")
 	StandbyRoleID = *flag.String("standby-role-id", "", "Standby Role ID")
+	AdminRoleID   = *flag.String("admin-role-id", "", "Admin Role ID")
 	ChannelID     = *flag.String("channel-id", "", "Channel ID")
 )
 
@@ -51,17 +52,30 @@ func main() {
 		panic(err)
 	}
 
-	cmd, err := discord.ApplicationCommandCreate(AppID, GuildID, &discordgo.ApplicationCommand{
-		Name:        "standby",
-		Description: "Toggle the 5-Stack Standby role",
-	})
-	if err != nil {
-		panic(err)
+	{
+		cmd, err := discord.ApplicationCommandCreate(AppID, GuildID, &discordgo.ApplicationCommand{
+			Name:        "standby",
+			Description: "Toggle the standby role",
+		})
+		if err != nil {
+			panic(err)
+		}
+		defer discord.ApplicationCommandDelete(AppID, GuildID, cmd.ID)
 	}
-	defer discord.ApplicationCommandDelete(AppID, GuildID, cmd.ID)
+	{
+		cmd, err := discord.ApplicationCommandCreate(AppID, GuildID, &discordgo.ApplicationCommand{
+			Name:        "standby-purge",
+			Description: "Admin command to remove all members from standby",
+		})
+		if err != nil {
+			panic(err)
+		}
+		defer discord.ApplicationCommandDelete(AppID, GuildID, cmd.ID)
+	}
 
 	remove := discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		if i.ApplicationCommandData().Name == "standby" {
+		switch i.ApplicationCommandData().Name {
+		case "standby":
 			userID := i.Member.User.ID
 			m, err := s.GuildMember(GuildID, userID)
 			if err != nil {
@@ -99,14 +113,51 @@ func main() {
 				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 					Type: discordgo.InteractionResponseChannelMessageWithSource,
 					Data: &discordgo.InteractionResponseData{
-						Content: "You have been added to standby. Type /standby again to remove yourself.",
+						Content: "You have been added to standby and will get pinged when 5 users are on standby. Type /standby again to remove yourself.",
 						Flags:   discordgo.MessageFlagsEphemeral,
 					},
 				})
 
 				checkStandbyCount(s)
 			}
+		case "standby-purge":
+			userID := i.Member.User.ID
+			m, err := s.GuildMember(GuildID, userID)
+			if err != nil {
+				log.Printf("error fetching member: %v\n", err)
+			}
+			var isAdmin bool
+			for _, r := range m.Roles {
+				if r == AdminRoleID {
+					isAdmin = true
+					break
+				}
+			}
+			if !isAdmin {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "Only admins can use this command.",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+			} else {
+				members := getStandbyMembers(s)
+				for _, m := range members {
+					if err := s.GuildMemberRoleRemove(GuildID, m.User.ID, StandbyRoleID); err != nil {
+						log.Printf("error removing role: %v\n", err)
+						continue
+					}
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: "Standby members purged.",
+						},
+					})
+				}
+			}
 		}
+
 	})
 	defer remove()
 
@@ -119,19 +170,8 @@ func main() {
 }
 
 func checkStandbyCount(s *discordgo.Session) {
-	members, err := s.GuildMembers(GuildID, "", 1000)
-	if err != nil {
-		log.Printf("error fetching members: %v\n", err)
-	}
-	var standbyCount int
-	for _, m := range members {
-		for _, r := range m.Roles {
-			if r == StandbyRoleID {
-				standbyCount++
-			}
-		}
-	}
-	if standbyCount >= 6 { // account for the bot
+	members := getStandbyMembers(s)
+	if len(members) >= 6 { // account for the bot
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -156,4 +196,23 @@ func checkStandbyCount(s *discordgo.Session) {
 		}
 		activeMessageID = ""
 	}
+}
+
+func getStandbyMembers(s *discordgo.Session) []*discordgo.Member {
+	members, err := s.GuildMembers(GuildID, "", 1000)
+	if err != nil {
+		log.Printf("error fetching members: %v\n", err)
+	}
+	var filtered []*discordgo.Member
+	for _, m := range members {
+		if m.User.Bot {
+			continue
+		}
+		for _, r := range m.Roles {
+			if r == StandbyRoleID {
+				filtered = append(filtered, m)
+			}
+		}
+	}
+	return filtered
 }
