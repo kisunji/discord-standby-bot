@@ -1,35 +1,33 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
 
 var (
-	BotToken      = *flag.String("token", "", "Bot access token")
-	AppID         = *flag.String("app-id", "", "App ID")
-	GuildID       = *flag.String("guild-id", "", "Guild ID (Server ID)")
-	StandbyRoleID = *flag.String("standby-role-id", "", "Standby Role ID")
-	AdminRoleID   = *flag.String("admin-role-id", "", "Admin Role ID")
-	ChannelID     = *flag.String("channel-id", "", "Channel ID")
+	BotToken    = os.Getenv("DISCORD_BOT_TOKEN")
+	AppID       = os.Getenv("STANDBY_APP_ID")
+	GuildID     = os.Getenv("STANDBY_GUILD_ID")
+	AdminRoleID = os.Getenv("STANDBY_ADMIN_ID")
+	ChannelID   = os.Getenv("STANDBY_CHANNEL_ID")
 )
-
-var (
-	activeMessageID = ""
-	mu              sync.Mutex
-)
-
-func init() {
-	flag.Parse()
-}
 
 func main() {
+	l, err := net.Listen("tcp4", "0.0.0.0:8080")
+	if err != nil {
+		panic(err)
+	}
+	defer l.Close()
+
 	discord, err := discordgo.New("Bot " + BotToken)
 	if err != nil {
 		panic(err)
@@ -55,7 +53,7 @@ func main() {
 	{
 		cmd, err := discord.ApplicationCommandCreate(AppID, GuildID, &discordgo.ApplicationCommand{
 			Name:        "standby",
-			Description: "Toggle the standby role",
+			Description: "Open standby queue",
 		})
 		if err != nil {
 			panic(err)
@@ -64,8 +62,8 @@ func main() {
 	}
 	{
 		cmd, err := discord.ApplicationCommandCreate(AppID, GuildID, &discordgo.ApplicationCommand{
-			Name:        "standby-purge",
-			Description: "Admin command to remove all members from standby",
+			Name:        "standby-close",
+			Description: "Admin command to close existing standby",
 		})
 		if err != nil {
 			panic(err)
@@ -73,91 +71,15 @@ func main() {
 		defer discord.ApplicationCommandDelete(AppID, GuildID, cmd.ID)
 	}
 
+	q := queueState{}
+
 	remove := discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		switch i.ApplicationCommandData().Name {
-		case "standby":
-			userID := i.Member.User.ID
-			m, err := s.GuildMember(GuildID, userID)
-			if err != nil {
-				log.Printf("error fetching member: %v\n", err)
-			}
-			var isStandby bool
-			for _, r := range m.Roles {
-				if r == StandbyRoleID {
-					isStandby = true
-					break
-				}
-			}
-
-			if isStandby {
-				// toggle it off
-				if err := s.GuildMemberRoleRemove(GuildID, userID, StandbyRoleID); err != nil {
-					log.Printf("error removing role: %v\n", err)
-					return
-				}
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "You have been removed from standby.",
-						Flags:   discordgo.MessageFlagsEphemeral,
-					},
-				})
-
-				checkStandbyCount(s)
-			} else {
-				// toggle it on
-				if err := s.GuildMemberRoleAdd(GuildID, userID, StandbyRoleID); err != nil {
-					log.Printf("error adding role: %v\n", err)
-					return
-				}
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "You have been added to standby and will get pinged when 5 users are on standby. Type /standby again to remove yourself.",
-						Flags:   discordgo.MessageFlagsEphemeral,
-					},
-				})
-
-				checkStandbyCount(s)
-			}
-		case "standby-purge":
-			userID := i.Member.User.ID
-			m, err := s.GuildMember(GuildID, userID)
-			if err != nil {
-				log.Printf("error fetching member: %v\n", err)
-			}
-			var isAdmin bool
-			for _, r := range m.Roles {
-				if r == AdminRoleID {
-					isAdmin = true
-					break
-				}
-			}
-			if !isAdmin {
-				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-					Type: discordgo.InteractionResponseChannelMessageWithSource,
-					Data: &discordgo.InteractionResponseData{
-						Content: "Only admins can use this command.",
-						Flags:   discordgo.MessageFlagsEphemeral,
-					},
-				})
-			} else {
-				members := getStandbyMembers(s)
-				for _, m := range members {
-					if err := s.GuildMemberRoleRemove(GuildID, m.User.ID, StandbyRoleID); err != nil {
-						log.Printf("error removing role: %v\n", err)
-						continue
-					}
-					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-						Type: discordgo.InteractionResponseChannelMessageWithSource,
-						Data: &discordgo.InteractionResponseData{
-							Content: "Standby members purged.",
-						},
-					})
-				}
-			}
+		switch i.Type {
+		case discordgo.InteractionApplicationCommand:
+			q.handleSlashCommand(s, i)
+		case discordgo.InteractionMessageComponent:
+			q.handleButtonClick(s, i)
 		}
-
 	})
 	defer remove()
 
@@ -169,50 +91,294 @@ func main() {
 	log.Println("exiting")
 }
 
-func checkStandbyCount(s *discordgo.Session) {
-	members := getStandbyMembers(s)
-	if len(members) >= 6 { // account for the bot
-		mu.Lock()
-		defer mu.Unlock()
+type queueState struct {
+	sync.Mutex
 
-		if activeMessageID != "" {
-			// Avoid spamming channel
+	currentMsgID string
+	notifyMsgID  string
+
+	lastUser   *discordgo.User
+	lastAction string
+
+	users []*discordgo.User
+
+	startTime time.Time
+}
+
+// lock must be held
+func (q *queueState) buildStringLocked() string {
+	var sb strings.Builder
+	switch q.lastAction {
+	case "join":
+		sb.WriteString(fmt.Sprintf("%s joined queue!\n", q.lastUser.Username))
+	case "leave":
+		sb.WriteString(fmt.Sprintf("%s left queue!\n", q.lastUser.Username))
+	}
+	sb.WriteString(fmt.Sprintf("### Queued users (%d):\n", len(q.users)))
+	for _, user := range q.users {
+		sb.WriteString(fmt.Sprintf("<@%s>\n", user.ID))
+	}
+
+	return sb.String()
+}
+
+func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.ApplicationCommandData().Name {
+	case "standby":
+		if q.currentMsgID != "" {
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "There is already an existing queue.",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
 			return
 		}
-		m, err := s.ChannelMessageSend(ChannelID, fmt.Sprintf("<@&%s> there are enough members for a game!", StandbyRoleID))
+
+		q.Lock()
+		defer q.Unlock()
+
+		q.startTime = time.Now()
+		msg, err := s.ChannelMessageSendComplex(ChannelID, &discordgo.MessageSend{
+			Embeds: []*discordgo.MessageEmbed{
+				{
+					Type:        discordgo.EmbedTypeRich,
+					Title:       "5-Stack Standby Queue",
+					Color:       0x0099FF,
+					Description: q.buildStringLocked(),
+				},
+			},
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Join",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "join_queue",
+						},
+						discordgo.Button{
+							Label:    "Leave",
+							Style:    discordgo.DangerButton,
+							CustomID: "leave_queue",
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			log.Printf("error sending message: %v\n", err)
+			return
+		}
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Starting queue.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		q.currentMsgID = msg.ID
+	case "standby-close":
+		userID := i.Member.User.ID
+		m, err := s.GuildMember(GuildID, userID)
+		if err != nil {
+			log.Printf("error fetching member: %v\n", err)
+		}
+		var isAdmin bool
+		for _, r := range m.Roles {
+			if r == AdminRoleID {
+				isAdmin = true
+				break
+			}
+		}
+		if !isAdmin {
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "Only admins can use this command.",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+		} else {
+			q.Lock()
+			defer q.Unlock()
+
+			if q.currentMsgID == "" {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "No active queue to close.",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+			}
+			_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+				ID:      q.currentMsgID,
+				Channel: ChannelID,
+				Embeds: []*discordgo.MessageEmbed{
+					{
+						Type:        discordgo.EmbedTypeRich,
+						Title:       "5-Stack Standby Queue",
+						Color:       0x0099FF,
+						Description: "Queue is closed",
+					},
+				},
+				Components: []discordgo.MessageComponent{
+					discordgo.ActionsRow{
+						Components: []discordgo.MessageComponent{
+							discordgo.Button{
+								Label:    "Join",
+								Style:    discordgo.PrimaryButton,
+								CustomID: "join_queue",
+								Disabled: true,
+							},
+							discordgo.Button{
+								Label:    "Leave",
+								Style:    discordgo.DangerButton,
+								CustomID: "leave_queue",
+								Disabled: true,
+							},
+						},
+					},
+				},
+			})
+			if err != nil {
+				log.Printf("error editing message closing queue: %v", err)
+			}
+			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "Closing queue.",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			q.currentMsgID = ""
+			q.lastAction = ""
+			q.lastUser = nil
+			q.users = nil
+
+		}
+	}
+}
+
+func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	q.Lock()
+	defer q.Unlock()
+
+	switch i.MessageComponentData().CustomID {
+	case "join_queue":
+		for _, user := range q.users {
+			if user.ID == i.Member.User.ID {
+				return
+			}
+		}
+		q.users = append(q.users, i.Member.User)
+		q.lastUser = i.Member.User
+		q.lastAction = "join"
+	case "leave_queue":
+		for idx, user := range q.users {
+			if user.ID == i.Member.User.ID {
+				q.users = append(q.users[:idx], q.users[idx+1:]...)
+			}
+		}
+		q.lastUser = i.Member.User
+		q.lastAction = "leave"
+	}
+	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		ID:      q.currentMsgID,
+		Channel: ChannelID,
+		Embeds: []*discordgo.MessageEmbed{
+			{
+				Type:        discordgo.EmbedTypeRich,
+				Title:       "5-Stack Standby Queue",
+				Color:       0x0099FF,
+				Description: q.buildStringLocked(),
+			},
+		},
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Join",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "join_queue",
+					},
+					discordgo.Button{
+						Label:    "Leave",
+						Style:    discordgo.DangerButton,
+						CustomID: "leave_queue",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		log.Printf("error editing message handling button click: %v", err)
+		return
+	}
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+	})
+
+	// Close queue is a user leaving would leave it at 0
+	if len(q.users) == 0 {
+		_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+			ID:      q.currentMsgID,
+			Channel: ChannelID,
+			Embeds: []*discordgo.MessageEmbed{
+				{
+					Type:        discordgo.EmbedTypeRich,
+					Title:       "5-Stack Standby Queue",
+					Color:       0x0099FF,
+					Description: "Queue is closed",
+				},
+			},
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Join",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "join_queue",
+							Disabled: true,
+						},
+						discordgo.Button{
+							Label:    "Leave",
+							Style:    discordgo.DangerButton,
+							CustomID: "leave_queue",
+							Disabled: true,
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			log.Printf("error editing message closing queue: %v", err)
+		}
+		q.currentMsgID = ""
+		q.lastAction = ""
+		q.lastUser = nil
+		q.users = nil
+	}
+
+	if len(q.users) >= 5 && q.notifyMsgID == "" {
+		usernames := make([]string, len(q.users))
+		for i, user := range q.users {
+			usernames[i] = fmt.Sprintf("<@%s>", user.ID)
+		}
+
+		m, err := s.ChannelMessageSend(ChannelID, fmt.Sprintf("There are enough users for a game! %s", strings.Join(usernames, ", ")))
 		if err != nil {
 			log.Printf("error sending channel message: %v\n", err)
 			return
 		}
-		activeMessageID = m.ID
+		q.notifyMsgID = m.ID
 	} else {
-		mu.Lock()
-		defer mu.Unlock()
-
-		if activeMessageID != "" {
-			if err := s.ChannelMessageDelete(ChannelID, activeMessageID); err != nil {
+		if q.notifyMsgID != "" {
+			if err := s.ChannelMessageDelete(ChannelID, q.notifyMsgID); err != nil {
 				log.Printf("error deleting active message: %v\n", err)
 			}
 		}
-		activeMessageID = ""
+		q.notifyMsgID = ""
 	}
-}
-
-func getStandbyMembers(s *discordgo.Session) []*discordgo.Member {
-	members, err := s.GuildMembers(GuildID, "", 1000)
-	if err != nil {
-		log.Printf("error fetching members: %v\n", err)
-	}
-	var filtered []*discordgo.Member
-	for _, m := range members {
-		if m.User.Bot {
-			continue
-		}
-		for _, r := range m.Roles {
-			if r == StandbyRoleID {
-				filtered = append(filtered, m)
-			}
-		}
-	}
-	return filtered
 }
