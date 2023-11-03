@@ -125,6 +125,9 @@ func (q *queueState) buildStringLocked() string {
 func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.ApplicationCommandData().Name {
 	case "standby":
+		q.Lock()
+		defer q.Unlock()
+
 		if q.currentMsgID != "" {
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
@@ -136,40 +139,11 @@ func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.Inter
 			return
 		}
 
-		q.Lock()
-		defer q.Unlock()
-
-		q.startTime = time.Now()
-		msg, err := s.ChannelMessageSendComplex(ChannelID, &discordgo.MessageSend{
-			Embeds: []*discordgo.MessageEmbed{
-				{
-					Type:        discordgo.EmbedTypeRich,
-					Title:       "5-Stack Standby Queue",
-					Color:       0x0099FF,
-					Description: q.buildStringLocked(),
-				},
-			},
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.Button{
-							Label:    "Join",
-							Style:    discordgo.PrimaryButton,
-							CustomID: "join_queue",
-						},
-						discordgo.Button{
-							Label:    "Leave",
-							Style:    discordgo.DangerButton,
-							CustomID: "leave_queue",
-						},
-					},
-				},
-			},
-		})
-		if err != nil {
-			log.Printf("error sending message: %v\n", err)
+		if err := q.openQueueLocked(s); err != nil {
+			log.Printf("error opening queue: %v", err)
 			return
 		}
+
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
@@ -177,7 +151,7 @@ func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.Inter
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
-		q.currentMsgID = msg.ID
+
 	case "standby-close":
 		userID := i.Member.User.ID
 		m, err := s.GuildMember(GuildID, userID)
@@ -212,39 +186,8 @@ func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.Inter
 					},
 				})
 			}
-			_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-				ID:      q.currentMsgID,
-				Channel: ChannelID,
-				Embeds: []*discordgo.MessageEmbed{
-					{
-						Type:        discordgo.EmbedTypeRich,
-						Title:       "5-Stack Standby Queue",
-						Color:       0x0099FF,
-						Description: "Queue is closed",
-					},
-				},
-				Components: []discordgo.MessageComponent{
-					discordgo.ActionsRow{
-						Components: []discordgo.MessageComponent{
-							discordgo.Button{
-								Label:    "Join",
-								Style:    discordgo.PrimaryButton,
-								CustomID: "join_queue",
-								Disabled: true,
-							},
-							discordgo.Button{
-								Label:    "Leave",
-								Style:    discordgo.DangerButton,
-								CustomID: "leave_queue",
-								Disabled: true,
-							},
-						},
-					},
-				},
-			})
-			if err != nil {
-				log.Printf("error editing message closing queue: %v", err)
-			}
+			q.closeQueueLocked(s)
+
 			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 				Type: discordgo.InteractionResponseChannelMessageWithSource,
 				Data: &discordgo.InteractionResponseData{
@@ -252,13 +195,96 @@ func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.Inter
 					Flags:   discordgo.MessageFlagsEphemeral,
 				},
 			})
-			q.currentMsgID = ""
-			q.lastAction = ""
-			q.lastUser = nil
-			q.users = nil
-
 		}
 	}
+}
+
+// lock must be held
+func (q *queueState) openQueueLocked(s *discordgo.Session) error {
+	q.startTime = time.Now()
+	msg, err := s.ChannelMessageSendComplex(ChannelID, &discordgo.MessageSend{
+		Embeds: []*discordgo.MessageEmbed{
+			{
+				Type:        discordgo.EmbedTypeRich,
+				Title:       "5-Stack Standby Queue",
+				Color:       0x0099FF,
+				Description: q.buildStringLocked(),
+			},
+		},
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Join",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "join_queue",
+					},
+					discordgo.Button{
+						Label:    "Leave",
+						Style:    discordgo.DangerButton,
+						CustomID: "leave_queue",
+					},
+					discordgo.Button{
+						Label:    "Close",
+						Style:    discordgo.SecondaryButton,
+						CustomID: "close_queue",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	q.currentMsgID = msg.ID
+	return nil
+}
+
+// lock must be held
+func (q *queueState) closeQueueLocked(s *discordgo.Session) {
+	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		ID:      q.currentMsgID,
+		Channel: ChannelID,
+		Embeds: []*discordgo.MessageEmbed{
+			{
+				Type:        discordgo.EmbedTypeRich,
+				Title:       "5-Stack Standby Queue",
+				Color:       0x0099FF,
+				Description: "Queue is closed",
+			},
+		},
+		Components: []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Join",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "join_queue",
+						Disabled: true,
+					},
+					discordgo.Button{
+						Label:    "Leave",
+						Style:    discordgo.DangerButton,
+						CustomID: "leave_queue",
+						Disabled: true,
+					},
+					discordgo.Button{
+						Label:    "Open",
+						Style:    discordgo.SecondaryButton,
+						CustomID: "open_queue",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		log.Printf("error editing message closing queue: %v", err)
+	}
+
+	q.currentMsgID = ""
+	q.lastAction = ""
+	q.lastUser = nil
+	q.users = nil
 }
 
 func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -266,6 +292,18 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 	defer q.Unlock()
 
 	switch i.MessageComponentData().CustomID {
+	case "close_queue":
+		q.closeQueueLocked(s)
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+		})
+		return
+	case "open_queue":
+		q.openQueueLocked(s)
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+		})
+		return
 	case "join_queue":
 		for _, user := range q.users {
 			if user.ID == i.Member.User.ID {
@@ -308,6 +346,11 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 						Style:    discordgo.DangerButton,
 						CustomID: "leave_queue",
 					},
+					discordgo.Button{
+						Label:    "Close",
+						Style:    discordgo.SecondaryButton,
+						CustomID: "close_queue",
+					},
 				},
 			},
 		},
@@ -322,43 +365,7 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 
 	// Close queue is a user leaving would leave it at 0
 	if len(q.users) == 0 {
-		_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
-			ID:      q.currentMsgID,
-			Channel: ChannelID,
-			Embeds: []*discordgo.MessageEmbed{
-				{
-					Type:        discordgo.EmbedTypeRich,
-					Title:       "5-Stack Standby Queue",
-					Color:       0x0099FF,
-					Description: "Queue is closed",
-				},
-			},
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.Button{
-							Label:    "Join",
-							Style:    discordgo.PrimaryButton,
-							CustomID: "join_queue",
-							Disabled: true,
-						},
-						discordgo.Button{
-							Label:    "Leave",
-							Style:    discordgo.DangerButton,
-							CustomID: "leave_queue",
-							Disabled: true,
-						},
-					},
-				},
-			},
-		})
-		if err != nil {
-			log.Printf("error editing message closing queue: %v", err)
-		}
-		q.currentMsgID = ""
-		q.lastAction = ""
-		q.lastUser = nil
-		q.users = nil
+		q.closeQueueLocked(s)
 	}
 
 	if len(q.users) >= 5 && q.notifyMsgID == "" {
