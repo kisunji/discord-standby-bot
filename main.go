@@ -315,7 +315,7 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 	defer q.Unlock()
 
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
 	})
 
 	switch i.MessageComponentData().CustomID {
