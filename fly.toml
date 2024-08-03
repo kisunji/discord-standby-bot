@@ -17,3 +17,8 @@ primary_region = "yyz"
   internal_port = 8080
   force_https = true
   processes = ["app"]
+
+[metrics]
+  port = 2112
+  path = "/metrics" # default for most prometheus exporters
+
