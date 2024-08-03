@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -20,6 +22,20 @@ var (
 	AdminRoleID = os.Getenv("STANDBY_ADMIN_ID")
 	ChannelID   = os.Getenv("STANDBY_CHANNEL_ID")
 )
+
+var (
+	commandDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "command_duration_seconds",
+			Help:    "Duration of commands in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(commandDuration)
+}
 
 func main() {
 	l, err := net.Listen("tcp4", "0.0.0.0:8080")
@@ -74,6 +90,11 @@ func main() {
 	q := queueState{}
 
 	remove := discord.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		start := time.Now()
+		defer func() {
+			duration := time.Since(start).Seconds()
+			commandDuration.Observe(duration)
+		}()
 		switch i.Type {
 		case discordgo.InteractionApplicationCommand:
 			q.handleSlashCommand(s, i)
@@ -83,10 +104,9 @@ func main() {
 	})
 	defer remove()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
 	log.Println("Press ctrl+c to exit")
-	<-stop
+	http.Handle("/metrics", promhttp.Handler())
+	http.ListenAndServe(":2112", nil)
 
 	log.Println("exiting")
 }
@@ -101,8 +121,6 @@ type queueState struct {
 	lastAction string
 
 	users []*discordgo.User
-
-	startTime time.Time
 }
 
 // lock must be held
@@ -201,7 +219,6 @@ func (q *queueState) handleSlashCommand(s *discordgo.Session, i *discordgo.Inter
 
 // lock must be held
 func (q *queueState) openQueueLocked(s *discordgo.Session) error {
-	q.startTime = time.Now()
 	msg, err := s.ChannelMessageSendComplex(ChannelID, &discordgo.MessageSend{
 		Embeds: []*discordgo.MessageEmbed{
 			{
@@ -245,7 +262,7 @@ func (q *queueState) closeQueueLocked(s *discordgo.Session) {
 	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 		ID:      q.currentMsgID,
 		Channel: ChannelID,
-		Embeds: []*discordgo.MessageEmbed{
+		Embeds: &[]*discordgo.MessageEmbed{
 			{
 				Type:        discordgo.EmbedTypeRich,
 				Title:       "5-Stack Standby Queue",
@@ -253,7 +270,7 @@ func (q *queueState) closeQueueLocked(s *discordgo.Session) {
 				Description: "Queue is closed",
 			},
 		},
-		Components: []discordgo.MessageComponent{
+		Components: &[]discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
 					discordgo.Button{
@@ -285,18 +302,25 @@ func (q *queueState) closeQueueLocked(s *discordgo.Session) {
 	q.lastAction = ""
 	q.lastUser = nil
 	q.users = nil
+	if q.notifyMsgID != "" {
+		if err := s.ChannelMessageDelete(ChannelID, q.notifyMsgID); err != nil {
+			log.Printf("error deleting active message: %v\n", err)
+		}
+	}
+	q.notifyMsgID = ""
 }
 
 func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	q.Lock()
 	defer q.Unlock()
 
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+	})
+
 	switch i.MessageComponentData().CustomID {
 	case "close_queue":
 		q.closeQueueLocked(s)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseUpdateMessage,
-		})
 		return
 	case "open_queue":
 		// Add the user who opened queue
@@ -310,10 +334,6 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		if err := s.ChannelMessageDelete(ChannelID, i.Message.ID); err != nil {
 			log.Printf("error deleting active message: %v\n", err)
 		}
-
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseUpdateMessage,
-		})
 		return
 	case "join_queue":
 		for _, user := range q.users {
@@ -336,7 +356,7 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 		ID:      q.currentMsgID,
 		Channel: ChannelID,
-		Embeds: []*discordgo.MessageEmbed{
+		Embeds: &[]*discordgo.MessageEmbed{
 			{
 				Type:        discordgo.EmbedTypeRich,
 				Title:       "5-Stack Standby Queue",
@@ -344,7 +364,7 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 				Description: q.buildStringLocked(),
 			},
 		},
-		Components: []discordgo.MessageComponent{
+		Components: &[]discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
 					discordgo.Button{
@@ -370,11 +390,8 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		log.Printf("error editing message handling button click: %v", err)
 		return
 	}
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-	})
 
-	// Close queue is a user leaving would leave it at 0
+	// Close queue if a user leaving would leave it at 0
 	if len(q.users) == 0 {
 		q.closeQueueLocked(s)
 	}
