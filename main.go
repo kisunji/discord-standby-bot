@@ -13,6 +13,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/exp/rand"
 )
 
 var (
@@ -116,6 +117,7 @@ type queueState struct {
 
 	currentMsgID string
 	notifyMsgID  string
+	oneMoreMsgID string
 
 	lastUser   *discordgo.User
 	lastAction string
@@ -128,9 +130,9 @@ func (q *queueState) buildStringLocked() string {
 	var sb strings.Builder
 	switch q.lastAction {
 	case "join":
-		sb.WriteString(fmt.Sprintf("%s joined queue!\n", q.lastUser.Username))
+		sb.WriteString(fmt.Sprintf("<@%s> joined queue!\n", q.lastUser.ID))
 	case "leave":
-		sb.WriteString(fmt.Sprintf("%s left queue!\n", q.lastUser.Username))
+		sb.WriteString(fmt.Sprintf("<@%s> left queue!\n", q.lastUser.Username))
 	}
 	sb.WriteString(fmt.Sprintf("### Queued users (%d):\n", len(q.users)))
 	for _, user := range q.users {
@@ -396,6 +398,22 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		q.closeQueueLocked(s)
 	}
 
+	if len(q.users) == 4 {
+		m, err := s.ChannelMessageSend(ChannelID, getRandomOneMore())
+		if err != nil {
+			log.Printf("error sending channel message: %v\n", err)
+			return
+		}
+		q.oneMoreMsgID = m.ID
+	} else {
+		if q.oneMoreMsgID != "" {
+			if err := s.ChannelMessageDelete(ChannelID, q.oneMoreMsgID); err != nil {
+				log.Printf("error deleting active message: %v\n", err)
+			}
+		}
+		q.oneMoreMsgID = ""
+	}
+
 	if len(q.users) >= 5 && q.notifyMsgID == "" {
 		usernames := make([]string, len(q.users))
 		for i, user := range q.users {
@@ -416,4 +434,30 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		}
 		q.notifyMsgID = ""
 	}
+}
+
+func getRandomOneMore() string {
+	translations := []string{
+		"nog een", "edhe një", "አንደኛ ተጨማሪ", "واحد آخر", "ևս մեկը", "bir daha",
+		"beste bat", "яшчэ адзін", "আরেকটি", "još jedan", "още един", "un més",
+		"usa pa", "再一个", "再一個", "još jedan", "ještě jeden", "en mere",
+		"nog een", "one more", "ankoraŭ unu", "veel üks", "isa pa", "vielä yksi",
+		"encore un", "un máis", "კიდევ ერთი", "noch eins", "ένα ακόμα", "એક વધુ",
+		"yon lòt", "ɗaya kuma", "עוד אחד", "एक और", "ib ntxiv", "még egy",
+		"einn í viðbót", "otu ọzọ", "satu lagi", "ceann eile", "un altro", "もう一つ",
+		"siji maneh", "ಇನ್ನೊಂದು", "тағы бір", "មួយទៀត", "undi umwe", "하나 더",
+		"yek din", "дагы бир", "ອີກໜຶ່ງ", "unum magis", "vēl viens", "dar vienas",
+		"nach eng", "уште еден", "iray hafa", "satu lagi", "മറ്റൊന്ന്", "ieħor",
+		"kotahi atu", "आणखी एक", "дахин нэг", "တစ်ခုထပ်", "अर्को", "en til",
+		"ଆଉ ଗୋଟିଏ", "یو بل", "یکی دیگر", "jeszcze jeden", "mais um", "ਇੱਕ ਹੋਰ",
+		"încă unul", "еще один", "tasi le isi", "fear eile", "још један", "e 'ngoe hape",
+		"chimwe zvakare", "هڪ وڌيڪ", "තවත් එකක්", "ešte jeden", "še en", "mid kale",
+		"uno más", "hiji deui", "moja zaidi", "en till", "боз як", "இன்னொரு",
+		"тагын бер", "మరోటి", "อีกหนึ่ง", "bir tane daha", "ýene bir", "ще один",
+		"ایک اور", "تېخىمۇ بىر", "yana bitta", "một cái nữa", "un arall", "enye",
+		"נאָך איינער", "ọkan siwaju sii", "elilodwa elengeziwe",
+	}
+
+	// Get random translation
+	return translations[rand.Intn(len(translations))]
 }
