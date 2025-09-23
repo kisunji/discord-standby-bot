@@ -132,7 +132,7 @@ func (q *queueState) buildStringLocked() string {
 	case "join":
 		sb.WriteString(fmt.Sprintf("<@%s> joined queue!\n", q.lastUser.ID))
 	case "leave":
-		sb.WriteString(fmt.Sprintf("<@%s> left queue!\n", q.lastUser.Username))
+		sb.WriteString(fmt.Sprintf("<@%s> left queue!\n", q.lastUser.ID))
 	}
 	sb.WriteString(fmt.Sprintf("### Queued users (%d):\n", len(q.users)))
 	for _, user := range q.users {
