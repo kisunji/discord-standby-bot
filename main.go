@@ -122,7 +122,8 @@ type queueState struct {
 	lastUser   *discordgo.User
 	lastAction string
 
-	users []*discordgo.User
+	users    []*discordgo.User
+	waitlist []*discordgo.User
 }
 
 // lock must be held
@@ -133,10 +134,21 @@ func (q *queueState) buildStringLocked() string {
 		sb.WriteString(fmt.Sprintf("<@%s> joined queue!\n", q.lastUser.ID))
 	case "leave":
 		sb.WriteString(fmt.Sprintf("<@%s> left queue!\n", q.lastUser.ID))
+	case "join_waitlist":
+		sb.WriteString(fmt.Sprintf("<@%s> joined waitlist!\n", q.lastUser.ID))
+	case "leave_waitlist":
+		sb.WriteString(fmt.Sprintf("<@%s> left waitlist!\n", q.lastUser.ID))
 	}
 	sb.WriteString(fmt.Sprintf("### Queued users (%d):\n", len(q.users)))
 	for _, user := range q.users {
 		sb.WriteString(fmt.Sprintf("<@%s>\n", user.ID))
+	}
+
+	if len(q.waitlist) > 0 {
+		sb.WriteString(fmt.Sprintf("\n### Waitlist (%d):\n", len(q.waitlist)))
+		for _, user := range q.waitlist {
+			sb.WriteString(fmt.Sprintf("<@%s>\n", user.ID))
+		}
 	}
 
 	return sb.String()
@@ -304,6 +316,7 @@ func (q *queueState) closeQueueLocked(s *discordgo.Session) {
 	q.lastAction = ""
 	q.lastUser = nil
 	q.users = nil
+	q.waitlist = nil
 	if q.notifyMsgID != "" {
 		if err := s.ChannelMessageDelete(ChannelID, q.notifyMsgID); err != nil {
 			log.Printf("error deleting active message: %v\n", err)
@@ -338,22 +351,58 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		}
 		return
 	case "join_queue":
+		// Check if user is already in queue or waitlist
 		for _, user := range q.users {
 			if user.ID == i.Member.User.ID {
 				return
 			}
 		}
-		q.users = append(q.users, i.Member.User)
-		q.lastUser = i.Member.User
-		q.lastAction = "join"
+		for _, user := range q.waitlist {
+			if user.ID == i.Member.User.ID {
+				return
+			}
+		}
+
+		// If queue has space, add to queue; otherwise add to waitlist
+		if len(q.users) < 5 {
+			q.users = append(q.users, i.Member.User)
+			q.lastUser = i.Member.User
+			q.lastAction = "join"
+		} else {
+			q.waitlist = append(q.waitlist, i.Member.User)
+			q.lastUser = i.Member.User
+			q.lastAction = "join_waitlist"
+		}
 	case "leave_queue":
+		// Check if user is in the main queue
 		for idx, user := range q.users {
 			if user.ID == i.Member.User.ID {
 				q.users = append(q.users[:idx], q.users[idx+1:]...)
+				q.lastUser = i.Member.User
+				q.lastAction = "leave"
+
+				// Move first waitlisted user to queue if waitlist exists
+				if len(q.waitlist) > 0 {
+					promoted := q.waitlist[0]
+					q.waitlist = q.waitlist[1:]
+					q.users = append(q.users, promoted)
+
+					// Notify the promoted user
+					s.ChannelMessageSend(ChannelID, fmt.Sprintf("<@%s> has been moved from waitlist to queue!", promoted.ID))
+				}
+				break
 			}
 		}
-		q.lastUser = i.Member.User
-		q.lastAction = "leave"
+
+		// Check if user is in the waitlist
+		for idx, user := range q.waitlist {
+			if user.ID == i.Member.User.ID {
+				q.waitlist = append(q.waitlist[:idx], q.waitlist[idx+1:]...)
+				q.lastUser = i.Member.User
+				q.lastAction = "leave_waitlist"
+				break
+			}
+		}
 	}
 	_, err := s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 		ID:      q.currentMsgID,
