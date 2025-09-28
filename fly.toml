@@ -7,8 +7,6 @@ app = "discord-standby-bot"
 primary_region = "yyz"
 
 [build]
-  [build.args]
-    GO_VERSION = "1.24.3"
 
 [env]
   PORT = "8080"
@@ -16,7 +14,15 @@ primary_region = "yyz"
 [http_service]
   internal_port = 8080
   force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
   processes = ["app"]
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
 
 [metrics]
   port = 2112
