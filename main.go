@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"github.com/bwmarrin/discordgo"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"golang.org/x/exp/rand"
 )
 
 // Constants
@@ -525,5 +525,5 @@ func getRandomOneMore() string {
 	}
 
 	// Get random translation
-	return translations[rand.Intn(len(translations))]
+	return translations[rand.IntN(len(translations))]
 }
