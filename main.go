@@ -429,7 +429,10 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 					q.users = append(q.users, promoted)
 
 					// Notify the promoted user
-					s.ChannelMessageSend(q.config.ChannelID, fmt.Sprintf("<@%s> has been moved from waitlist to queue!", promoted.ID))
+					_, err := s.ChannelMessageSend(q.config.ChannelID, fmt.Sprintf("🎉 <@%s> you've been moved from the waitlist to the queue!", promoted.ID))
+					if err != nil {
+						log.Printf("error sending promotion notification: %v\n", err)
+					}
 				}
 				break
 			}
@@ -480,7 +483,7 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		q.oneMoreMsgID = ""
 	}
 
-	if len(q.users) >= MaxQueueSize && q.notifyMsgID == "" {
+	if len(q.users) == MaxQueueSize && q.notifyMsgID == "" {
 		usernames := make([]string, len(q.users))
 		for i, user := range q.users {
 			usernames[i] = fmt.Sprintf("<@%s>", user.ID)
@@ -492,11 +495,9 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 			return
 		}
 		q.notifyMsgID = m.ID
-	} else {
-		if q.notifyMsgID != "" {
-			if err := s.ChannelMessageDelete(q.config.ChannelID, q.notifyMsgID); err != nil {
-				log.Printf("error deleting active message: %v\n", err)
-			}
+	} else if len(q.users) < MaxQueueSize && q.notifyMsgID != "" {
+		if err := s.ChannelMessageDelete(q.config.ChannelID, q.notifyMsgID); err != nil {
+			log.Printf("error deleting active message: %v\n", err)
 		}
 		q.notifyMsgID = ""
 	}
