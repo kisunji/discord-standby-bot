@@ -148,12 +148,8 @@ impl QueueManager {
             _ => None,
         };
 
-        // Track the last action with relative timestamp
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        self.last_action = Some(format!("<@{}> joined <t:{}:R>", user_id, timestamp));
+        // Track the last action
+        self.last_action = Some(format!("<@{}> joined", user_id));
 
         QueueOperationResult::Success {
             users,
@@ -204,12 +200,8 @@ impl QueueManager {
             }
         });
 
-        // Track the last action with relative timestamp
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        self.last_action = Some(format!("<@{}> left <t:{}:R>", user_id, timestamp));
+        // Track the last action
+        self.last_action = Some(format!("<@{}> left", user_id));
 
         QueueOperationResult::Success {
             users,
