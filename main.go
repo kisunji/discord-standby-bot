@@ -386,16 +386,10 @@ func (q *queueState) handleButtonClick(s *discordgo.Session, i *discordgo.Intera
 		q.closeQueueLocked(s)
 		return
 	case OpenQueueButtonID:
-		// Add the user who opened queue
-		q.users = append(q.users, i.Member.User)
-		q.lastUser = i.Member.User
-		q.lastAction = ActionJoin
-
-		q.openQueueLocked(s)
-
-		// Delete the original message to clean up clutter
-		if err := s.ChannelMessageDelete(q.config.ChannelID, i.Message.ID); err != nil {
-			log.Printf("error deleting active message: %v\n", err)
+		// Send snarky message
+		_, err := s.ChannelMessageSend(q.config.ChannelID, fmt.Sprintf("<@%s> thought they'd be clever opening the v1 queue. What a loser!", i.Member.User.ID))
+		if err != nil {
+			log.Printf("error sending snarky message: %v\n", err)
 		}
 		return
 	case JoinQueueButtonID:
