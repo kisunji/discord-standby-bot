@@ -41,7 +41,8 @@ impl QueueNotification {
         match self {
             Self::OneMore => "One more".to_string(),
             Self::Ready { users } => {
-                format!("There are enough users for a game!\n{}", users.join(", "))
+                let mentions: Vec<String> = users.iter().map(|id| format!("<@{}>", id)).collect();
+                format!("There are enough users for a game!\n{}", mentions.join(", "))
             }
         }
     }
