@@ -15,7 +15,7 @@ use serenity::model::prelude::Interaction;
 use tokio::sync::Mutex;
 use warp::Filter;
 
-use queue::QueueManager;
+use crate::queue::QueueManager;
 
 /// Main event handler with shared queue manager state.
 struct Handler {

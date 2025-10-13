@@ -149,7 +149,7 @@ impl QueueManager {
         };
 
         // Track the last action
-        self.last_action = Some(format!("<@{}> joined", user_id));
+        self.last_action = Some(format!("<@{}> joined!", user_id));
 
         QueueOperationResult::Success {
             users,
@@ -201,7 +201,7 @@ impl QueueManager {
         });
 
         // Track the last action
-        self.last_action = Some(format!("<@{}> left", user_id));
+        self.last_action = Some(format!("<@{}> left!", user_id));
 
         QueueOperationResult::Success {
             users,
