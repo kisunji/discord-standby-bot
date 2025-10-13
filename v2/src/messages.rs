@@ -57,7 +57,7 @@ fn create_queue_embed(users: &[String], waitlist: &[String], last_action: Option
     // Add last action if provided
     if let Some(action_text) = last_action {
         description.push_str(action_text);
-        description.push_str("\n\n");
+        description.push_str("\n");
     }
 
     if users.is_empty() {
