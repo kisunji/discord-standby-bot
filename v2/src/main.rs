@@ -11,7 +11,7 @@ use serenity::all::{
 };
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::{GuildId, Interaction};
+use serenity::model::prelude::{Guild, GuildId, Interaction};
 use tokio::sync::Mutex;
 use warp::Filter;
 
@@ -41,6 +41,19 @@ impl EventHandler for Handler {
                 )
                 .await;
         }
+    }
+
+    async fn guild_create(&self, ctx: Context, guild: Guild, _is_new: Option<bool>) {
+        println!("Bot added to guild: {} ({})", guild.name, guild.id);
+        
+        // Register slash commands for this guild
+        let _ = guild.id
+            .create_command(
+                &ctx.http,
+                CreateCommand::new(config::COMMAND_STANDBY)
+                    .description(config::COMMAND_STANDBY_DESC),
+            )
+            .await;
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
