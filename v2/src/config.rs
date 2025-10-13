@@ -20,3 +20,9 @@ pub const COMMAND_STANDBY: &str = "standby";
 
 /// Description shown in Discord for the standby command.
 pub const COMMAND_STANDBY_DESC: &str = "Start a standby queue";
+
+/// Slash command name for bumping the queue message.
+pub const COMMAND_BUMP: &str = "bump";
+
+/// Description shown in Discord for the bump command.
+pub const COMMAND_BUMP_DESC: &str = "Bump the queue message to the bottom of chat";

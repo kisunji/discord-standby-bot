@@ -94,6 +94,113 @@ pub async fn handle_standby_command(
     }
 }
 
+/// Handles the `/bump` slash command to bump the queue message.
+/// Deletes the old message and creates a new one at the bottom.
+pub async fn handle_bump_command(
+    command: &CommandInteraction,
+    ctx: &Context,
+    queue_manager: &mut QueueManager,
+) {
+    let guild_id = command.guild_id.expect("Expected guild_id").to_string();
+    let channel_id = command.channel_id.to_string();
+
+    // Check if a queue exists
+    if let Ok(false) = queue_manager.queue_exists(&guild_id, &channel_id) {
+        let _ = command
+            .create_response(
+                &ctx.http,
+                serenity::builder::CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("No active queue to bump")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
+    // Get current queue state
+    let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
+        Ok(users) => users,
+        Err(e) => {
+            eprintln!("Failed to get users: {}", e);
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Failed to bump queue")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let (queue_users, waitlist_users) = QueueManager::split_queue(all_users);
+
+    // Get the old message ID
+    let old_msg_id = match queue_manager.get_message_id(&guild_id, &channel_id) {
+        Ok(Some(id)) => id,
+        _ => {
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Failed to find queue message")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    // Delete the old message
+    let _ = command
+        .channel_id
+        .delete_message(&ctx.http, MessageId::new(old_msg_id as u64))
+        .await;
+
+    // Send acknowledgment
+    let _ = command
+        .create_response(
+            &ctx.http,
+            serenity::builder::CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Queue bumped!")
+                    .ephemeral(true),
+            ),
+        )
+        .await;
+
+    // Get last action for display
+    let last_action_text = queue_manager.get_last_action();
+
+    // Send a new message (this "bumps" it to the bottom)
+    let new_msg = match command
+        .channel_id
+        .send_message(
+            &ctx.http,
+            messages::create_initial_queue_message(&queue_users, &waitlist_users, last_action_text),
+        )
+        .await
+    {
+        Ok(msg) => msg,
+        Err(e) => {
+            eprintln!("Failed to send new message: {:?}", e);
+            return;
+        }
+    };
+
+    // Update the stored message ID
+    if let Err(e) = queue_manager.create_queue(&guild_id, &channel_id, new_msg.id.get() as i64) {
+        eprintln!("Failed to update message ID: {}", e);
+    }
+}
+
 /// Handles the "Join" button click.
 /// Adds the user to the queue/waitlist and updates the message.
 pub async fn handle_join_queue(

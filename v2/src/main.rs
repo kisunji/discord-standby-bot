@@ -37,6 +37,13 @@ impl EventHandler for Handler {
                 .description(config::COMMAND_STANDBY_DESC),
         )
         .await;
+
+        let _ = serenity::all::Command::create_global_command(
+            &ctx.http,
+            CreateCommand::new(config::COMMAND_BUMP)
+                .description(config::COMMAND_BUMP_DESC),
+        )
+        .await;
         
         println!("Global slash commands registered");
     }
@@ -44,9 +51,12 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match interaction {
             Interaction::Command(command) => {
+                let mut queue_manager = self.queue_manager.lock().await;
+                
                 if command.data.name == config::COMMAND_STANDBY {
-                    let mut queue_manager = self.queue_manager.lock().await;
                     handlers::handle_standby_command(&command, &ctx, &mut queue_manager).await;
+                } else if command.data.name == config::COMMAND_BUMP {
+                    handlers::handle_bump_command(&command, &ctx, &mut queue_manager).await;
                 } else {
                     eprintln!("Unknown slash command: {}", command.data.name);
                 }

@@ -97,6 +97,13 @@ impl QueueManager {
             .map_err(|e| format!("Failed to get message ID: {e:?}"))
     }
 
+    /// Retrieves all users in the queue and waitlist.
+    pub fn get_users(&mut self, guild_id: &str, channel_id: &str) -> Result<Vec<String>, String> {
+        self.store
+            .get_users(guild_id, channel_id)
+            .map_err(|e| format!("Failed to get users: {e:?}"))
+    }
+
     /// Verifies if a message ID matches the stored queue message.
     pub fn is_active_queue(&mut self, guild_id: &str, channel_id: &str, message_id: u64) -> bool {
         matches!(
@@ -106,7 +113,7 @@ impl QueueManager {
     }
 
     /// Splits all users into main queue and waitlist.
-    fn split_queue(all_users: Vec<String>) -> (Vec<String>, Vec<String>) {
+    pub fn split_queue(all_users: Vec<String>) -> (Vec<String>, Vec<String>) {
         if all_users.len() > QUEUE_FULL {
             let users = all_users[..QUEUE_FULL].to_vec();
             let waitlist = all_users[QUEUE_FULL..].to_vec();
