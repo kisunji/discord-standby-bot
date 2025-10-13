@@ -11,7 +11,7 @@ use serenity::all::{
 };
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
-use serenity::model::prelude::{Guild, GuildId, Interaction};
+use serenity::model::prelude::Interaction;
 use tokio::sync::Mutex;
 use warp::Filter;
 
@@ -31,29 +31,14 @@ impl EventHandler for Handler {
             OnlineStatus::Online,
         );
 
-        // Register slash commands for all guilds
-        for guild in &ready.guilds {
-            let _ = GuildId::new(guild.id.into())
-                .create_command(
-                    &ctx.http,
-                    CreateCommand::new(config::COMMAND_STANDBY)
-                        .description(config::COMMAND_STANDBY_DESC),
-                )
-                .await;
-        }
-    }
-
-    async fn guild_create(&self, ctx: Context, guild: Guild, _is_new: Option<bool>) {
-        println!("Bot added to guild: {} ({})", guild.name, guild.id);
+        let _ = serenity::all::Command::create_global_command(
+            &ctx.http,
+            CreateCommand::new(config::COMMAND_STANDBY)
+                .description(config::COMMAND_STANDBY_DESC),
+        )
+        .await;
         
-        // Register slash commands for this guild
-        let _ = guild.id
-            .create_command(
-                &ctx.http,
-                CreateCommand::new(config::COMMAND_STANDBY)
-                    .description(config::COMMAND_STANDBY_DESC),
-            )
-            .await;
+        println!("Global slash commands registered");
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -69,7 +54,6 @@ impl EventHandler for Handler {
             Interaction::Component(component) => {
                 let custom_id = &component.data.custom_id;
 
-                // Acknowledge interaction silently (no loading state)
                 let _ = component
                     .create_response(
                         &ctx.http,
@@ -98,7 +82,6 @@ impl EventHandler for Handler {
                     return;
                 }
 
-                // Route to appropriate handler
                 match custom_id.as_str() {
                     "join_queue" => {
                         handlers::handle_join_queue(&component, &ctx, &mut queue_manager).await;
@@ -133,7 +116,7 @@ async fn main() {
         .await
         .expect("Error creating client");
 
-    // Start health check server on port 8000
+    // Start health check server on port 8000 (make fly.io happy)
     tokio::spawn(async {
         let health_check = warp::path::end()
             .map(|| warp::reply::with_status("OK", warp::http::StatusCode::OK));
