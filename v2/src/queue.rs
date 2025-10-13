@@ -208,13 +208,19 @@ impl QueueManager {
             }
         });
 
+        // Check if we should send a notification after someone leaves
+        let notification = match users.len() {
+            QUEUE_ALMOST_FULL => Some(QueueNotification::OneMore),
+            _ => None,
+        };
+
         // Track the last action
         self.last_action = Some(format!("<@{}> left!", user_id));
 
         QueueOperationResult::Success {
             users,
             waitlist,
-            notification: None,
+            notification,
             promoted_user,
         }
     }
