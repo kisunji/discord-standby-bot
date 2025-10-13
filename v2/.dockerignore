@@ -1,0 +1,14 @@
+target/
+.env
+.env.*
+*.log
+.git/
+.gitignore
+README.md
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+fly.toml

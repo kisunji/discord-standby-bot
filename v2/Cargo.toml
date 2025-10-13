@@ -1,0 +1,18 @@
+[package]
+name = "discord-standby-bot-v2"
+version = "0.1.0"
+edition = "2021"
+description = "A Discord standby bot written in Rust"
+authors = ["Your Name <your.email@example.com>"]
+
+[dependencies]
+redis = "0.32.7"
+serenity = { version = "0.12", default-features = false, features = [
+    "client",
+    "gateway",
+    "rustls_backend",
+    "model",
+    "cache",
+] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+warp = "0.3"

@@ -1,0 +1,37 @@
+# Default Rust .gitignore
+# Compiled files
+/target/
+**/*.rs.bk
+
+# Build output
+*.o
+*.so
+*.rlib
+*.dll
+*.exe
+*.d
+
+# Cargo specific
+Cargo.lock
+.cargo/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# By-products
+*.dSYM/
+*.stackdump
+
+# Misc
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
