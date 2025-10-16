@@ -201,6 +201,29 @@ pub async fn handle_bump_command(
     }
 }
 
+/// Helper function to delete old notification message if it exists.
+async fn delete_old_notification(
+    ctx: &Context,
+    queue_manager: &mut QueueManager,
+    guild_id: &str,
+    channel_id: &str,
+) {
+    if let Ok(Some(notif_msg_id)) = queue_manager.get_notification_message_id(guild_id, channel_id) {
+        let channel_id_parsed = channel_id.parse::<u64>().ok();
+        if let Some(channel_id_u64) = channel_id_parsed {
+            let _ = ctx
+                .http
+                .delete_message(
+                    serenity::all::ChannelId::new(channel_id_u64),
+                    MessageId::new(notif_msg_id as u64),
+                    None,
+                )
+                .await;
+        }
+        let _ = queue_manager.delete_notification_message_id(guild_id, channel_id);
+    }
+}
+
 /// Handles the "Join" button click.
 /// Adds the user to the queue/waitlist and updates the message.
 pub async fn handle_join_queue(
@@ -219,6 +242,9 @@ pub async fn handle_join_queue(
             notification,
             ..
         } => {
+            // Delete old notification message before sending new one or updating queue
+            delete_old_notification(ctx, queue_manager, &guild_id, &channel_id).await;
+
             if let Err(e) = update_queue_message(
                 component,
                 ctx,
@@ -235,10 +261,21 @@ pub async fn handle_join_queue(
             }
 
             if let Some(notif) = notification {
-                let _ = component
+                match component
                     .channel_id
                     .say(&ctx.http, notif.to_message())
-                    .await;
+                    .await
+                {
+                    Ok(msg) => {
+                        // Store the notification message ID
+                        let _ = queue_manager.set_notification_message_id(
+                            &guild_id,
+                            &channel_id,
+                            msg.id.get() as i64,
+                        );
+                    }
+                    Err(e) => eprintln!("Failed to send notification: {}", e),
+                }
             }
         }
         QueueOperationResult::AlreadyInQueue => {}
@@ -265,8 +302,11 @@ pub async fn handle_leave_queue(
             users,
             waitlist,
             promoted_user,
-            ..
+            notification,
         } => {
+            // Delete old notification message before sending new one or updating queue
+            delete_old_notification(ctx, queue_manager, &guild_id, &channel_id).await;
+
             if let Err(e) = update_queue_message(
                 component,
                 ctx,
@@ -285,6 +325,25 @@ pub async fn handle_leave_queue(
             if let Some(promoted_id) = promoted_user {
                 let message = format!("<@{}> you're up!", promoted_id);
                 let _ = component.channel_id.say(&ctx.http, message).await;
+            }
+
+            // Send "One more" notification if queue is at 4 users
+            if let Some(notif) = notification {
+                match component
+                    .channel_id
+                    .say(&ctx.http, notif.to_message())
+                    .await
+                {
+                    Ok(msg) => {
+                        // Store the notification message ID
+                        let _ = queue_manager.set_notification_message_id(
+                            &guild_id,
+                            &channel_id,
+                            msg.id.get() as i64,
+                        );
+                    }
+                    Err(e) => eprintln!("Failed to send notification: {}", e),
+                }
             }
             
             // If queue is now empty, close it automatically
@@ -334,6 +393,9 @@ pub async fn handle_close_queue(
             return;
         }
     };
+
+    // Delete notification message when closing queue
+    delete_old_notification(ctx, queue_manager, &guild_id, &channel_id).await;
 
     match queue_manager.close_queue(&guild_id, &channel_id) {
         Ok(()) => {

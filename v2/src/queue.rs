@@ -98,6 +98,40 @@ impl QueueManager {
             .map_err(|e| format!("Failed to get message ID: {e:?}"))
     }
 
+    /// Stores the notification message ID.
+    pub fn set_notification_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+        message_id: i64,
+    ) -> Result<(), String> {
+        self.store
+            .set_notification_message_id(guild_id, channel_id, message_id)
+            .map_err(|e| format!("Failed to store notification message ID: {e:?}"))
+    }
+
+    /// Retrieves the notification message ID.
+    pub fn get_notification_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+    ) -> Result<Option<i64>, String> {
+        self.store
+            .get_notification_message_id(guild_id, channel_id)
+            .map_err(|e| format!("Failed to get notification message ID: {e:?}"))
+    }
+
+    /// Deletes the notification message ID.
+    pub fn delete_notification_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+    ) -> Result<(), String> {
+        self.store
+            .delete_notification_message_id(guild_id, channel_id)
+            .map_err(|e| format!("Failed to delete notification message ID: {e:?}"))
+    }
+
     /// Retrieves all users in the queue and waitlist.
     pub fn get_users(&mut self, guild_id: &str, channel_id: &str) -> Result<Vec<String>, String> {
         self.store
