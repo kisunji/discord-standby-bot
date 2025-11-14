@@ -1,7 +1,10 @@
 //! Interaction handlers for Discord commands and button clicks.
 
 use serenity::all::{CommandInteraction, ComponentInteraction, Context, MessageId};
-use serenity::builder::CreateInteractionResponseMessage;
+use serenity::builder::{
+    AutocompleteChoice, CreateAutocompleteResponse, CreateInteractionResponse,
+    CreateInteractionResponseMessage,
+};
 
 use crate::messages;
 use crate::queue::{QueueManager, QueueOperationResult};
@@ -439,10 +442,6 @@ pub async fn handle_open_queue(
         _ => {}
     }
 
-    // Clean up any orphaned queue/waitlist data before opening new queue
-    // This handles edge cases where data exists but no message ID was stored
-    let _ = queue_manager.close_queue(&guild_id, &channel_id);
-
     let Ok(msg) = component
         .channel_id
         .send_message(&ctx.http, messages::create_initial_queue_message(&[], &[], None))
@@ -508,4 +507,339 @@ async fn update_queue_message(
         .map_err(|e| format!("Failed to edit message: {:?}", e))?;
 
     Ok(())
+}
+
+/// Handles the `/kick` slash command to remove a user from the queue by username.
+pub async fn handle_kick_command(
+    command: &CommandInteraction,
+    ctx: &Context,
+    queue_manager: &mut QueueManager,
+) {
+    let guild_id = command.guild_id.expect("Expected guild_id").to_string();
+    let channel_id = command.channel_id.to_string();
+
+    // Check if a queue exists
+    if let Ok(false) = queue_manager.queue_exists(&guild_id, &channel_id) {
+        let _ = command
+            .create_response(
+                &ctx.http,
+                serenity::builder::CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("No active queue exists")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
+    // Get the username parameter
+    let username = match command.data.options.first() {
+        Some(option) => option.value.as_str().unwrap_or(""),
+        None => {
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Please provide a username")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    // Get all users in the queue
+    let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
+        Ok(users) => users,
+        Err(e) => {
+            eprintln!("Failed to get users: {}", e);
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Failed to get queue users")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    // Build a map of user IDs to usernames
+    let guild_id_parsed = match guild_id.parse::<u64>() {
+        Ok(id) => serenity::all::GuildId::new(id),
+        Err(_) => {
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Invalid guild ID")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let mut user_id_map = std::collections::HashMap::new();
+    for user_id_str in &all_users {
+        if let Ok(uid) = user_id_str.parse::<u64>() {
+            let user_id = serenity::all::UserId::new(uid);
+            if let Ok(member) = guild_id_parsed.member(&ctx.http, user_id).await {
+                // Try display name first, then username
+                let name = if let Some(nick) = member.nick {
+                    nick
+                } else {
+                    member.user.name.clone()
+                };
+                user_id_map.insert(user_id_str.clone(), name);
+            }
+        }
+    }
+
+    // Kick the user
+    match queue_manager.kick_user(&guild_id, &channel_id, username, &user_id_map) {
+        QueueOperationResult::Success {
+            users,
+            waitlist,
+            notification,
+            promoted_user,
+        } => {
+            // Delete old notification message before sending new one
+            delete_old_notification(ctx, queue_manager, &guild_id, &channel_id).await;
+
+            // Get the message ID to update
+            let msg_id = match queue_manager.get_message_id(&guild_id, &channel_id) {
+                Ok(Some(id)) => id,
+                _ => {
+                    let _ = command
+                        .create_response(
+                            &ctx.http,
+                            serenity::builder::CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to find queue message")
+                                    .ephemeral(true),
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            };
+
+            // Get last action for display
+            let last_action_text = queue_manager.get_last_action();
+
+            // Update the queue message
+            let edit_message = messages::create_active_queue_message(&users, &waitlist, last_action_text);
+            if let Err(e) = command
+                .channel_id
+                .edit_message(&ctx.http, MessageId::new(msg_id as u64), edit_message)
+                .await
+            {
+                eprintln!("Failed to edit message: {:?}", e);
+            }
+
+            // Send confirmation
+            let kicked_user = user_id_map
+                .iter()
+                .find(|(_, name)| name.to_lowercase().contains(&username.to_lowercase()))
+                .map(|(_, name)| name.as_str())
+                .unwrap_or(username);
+
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(format!("Kicked {} from the queue", kicked_user))
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+
+            // Send notification if needed
+            if let Some(notif) = notification {
+                match command
+                    .channel_id
+                    .say(&ctx.http, notif.to_message())
+                    .await
+                {
+                    Ok(msg) => {
+                        let _ = queue_manager.set_notification_message_id(
+                            &guild_id,
+                            &channel_id,
+                            msg.id.get() as i64,
+                        );
+                    }
+                    Err(e) => eprintln!("Failed to send notification: {}", e),
+                }
+            }
+
+            // Send promoted notification if needed
+            if let Some(promoted_id) = promoted_user {
+                let _ = command
+                    .channel_id
+                    .say(&ctx.http, format!("<@{}> has been promoted from the waitlist to the queue!", promoted_id))
+                    .await;
+            }
+
+            // If queue is now empty, close it automatically
+            if users.is_empty() && waitlist.is_empty() {
+                if let Err(e) = queue_manager.close_queue(&guild_id, &channel_id) {
+                    eprintln!("Failed to close queue after last user was kicked: {}", e);
+                } else {
+                    // Update the message to show queue is closed with disabled buttons
+                    let edit_message = messages::create_closed_queue_message();
+                    let _ = command
+                        .channel_id
+                        .edit_message(&ctx.http, MessageId::new(msg_id as u64), edit_message)
+                        .await;
+                }
+            }
+        }
+        QueueOperationResult::NotInQueue => {
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("User is not in the queue")
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+        }
+        QueueOperationResult::Error(err) => {
+            let _ = command
+                .create_response(
+                    &ctx.http,
+                    serenity::builder::CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content(format!("Error: {}", err))
+                            .ephemeral(true),
+                    ),
+                )
+                .await;
+        }
+        _ => {}
+    }
+}
+
+/// Handles autocomplete for the `/kick` command username parameter.
+/// Returns a list of users currently in the queue that match the typed input.
+pub async fn handle_kick_autocomplete(
+    autocomplete: &CommandInteraction,
+    ctx: &Context,
+    queue_manager: &mut QueueManager,
+) {
+    let guild_id = match autocomplete.guild_id {
+        Some(id) => id.to_string(),
+        None => {
+            // Not in a guild, can't provide autocomplete
+            let _ = autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await;
+            return;
+        }
+    };
+    let channel_id = autocomplete.channel_id.to_string();
+
+    // Get the current input value from autocomplete
+    let focused_value = autocomplete
+        .data
+        .autocomplete()
+        .map(|opt| opt.value)
+        .unwrap_or("");
+
+    // Check if a queue exists
+    let queue_exists = queue_manager
+        .queue_exists(&guild_id, &channel_id)
+        .unwrap_or(false);
+
+    if !queue_exists {
+        // No queue, return empty choices
+        let _ = autocomplete
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+            )
+            .await;
+        return;
+    }
+
+    // Get all users in the queue
+    let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
+        Ok(users) => users,
+        Err(_) => {
+            let _ = autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await;
+            return;
+        }
+    };
+
+    // Build a list of usernames for autocomplete
+    let guild_id_parsed = match guild_id.parse::<u64>() {
+        Ok(id) => serenity::all::GuildId::new(id),
+        Err(_) => {
+            let _ = autocomplete
+                .create_response(
+                    &ctx.http,
+                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                )
+                .await;
+            return;
+        }
+    };
+
+    let mut choices = Vec::new();
+    let focused_lower = focused_value.to_lowercase();
+
+    for user_id_str in &all_users {
+        if let Ok(uid) = user_id_str.parse::<u64>() {
+            let user_id = serenity::all::UserId::new(uid);
+            if let Ok(member) = guild_id_parsed.member(&ctx.http, user_id).await {
+                // Try display name first, then username
+                let display_name = if let Some(nick) = &member.nick {
+                    nick.clone()
+                } else {
+                    member.user.name.clone()
+                };
+
+                // Filter by the focused input (case-insensitive)
+                if focused_value.is_empty()
+                    || display_name.to_lowercase().contains(&focused_lower)
+                {
+                    choices.push(AutocompleteChoice::new(
+                        display_name.clone(),
+                        display_name,
+                    ));
+
+                    // Discord limits autocomplete to 25 choices
+                    if choices.len() >= 25 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let response = CreateAutocompleteResponse::new().set_choices(choices);
+
+    let _ = autocomplete
+        .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(response))
+        .await;
 }

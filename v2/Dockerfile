@@ -1,4 +1,4 @@
-FROM rust:1.83-slim AS chef
+FROM rust:latest AS chef
 RUN cargo install cargo-chef
 WORKDIR /app
 

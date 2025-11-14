@@ -26,3 +26,9 @@ pub const COMMAND_BUMP: &str = "bump";
 
 /// Description shown in Discord for the bump command.
 pub const COMMAND_BUMP_DESC: &str = "Bump the queue message to the bottom of chat";
+
+/// Slash command name for kicking a user from the queue.
+pub const COMMAND_KICK: &str = "kick";
+
+/// Description shown in Discord for the kick command.
+pub const COMMAND_KICK_DESC: &str = "Kick a user from the queue by username";

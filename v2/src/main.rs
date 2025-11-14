@@ -5,9 +5,11 @@ mod handlers;
 mod messages;
 mod queue;
 mod redis_store;
+mod translations;
 
 use serenity::all::{
-    ActivityData, Client, Context, CreateCommand, EventHandler, GatewayIntents, OnlineStatus,
+    ActivityData, Client, CommandOptionType, Context, CreateCommand, CreateCommandOption,
+    EventHandler, GatewayIntents, OnlineStatus,
 };
 use serenity::async_trait;
 use serenity::model::gateway::Ready;
@@ -44,6 +46,22 @@ impl EventHandler for Handler {
                 .description(config::COMMAND_BUMP_DESC),
         )
         .await;
+
+        let _ = serenity::all::Command::create_global_command(
+            &ctx.http,
+            CreateCommand::new(config::COMMAND_KICK)
+                .description(config::COMMAND_KICK_DESC)
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "username",
+                        "Username or display name of the user to kick",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                ),
+        )
+        .await;
         
         println!("Global slash commands registered");
     }
@@ -57,8 +75,17 @@ impl EventHandler for Handler {
                     handlers::handle_standby_command(&command, &ctx, &mut queue_manager).await;
                 } else if command.data.name == config::COMMAND_BUMP {
                     handlers::handle_bump_command(&command, &ctx, &mut queue_manager).await;
+                } else if command.data.name == config::COMMAND_KICK {
+                    handlers::handle_kick_command(&command, &ctx, &mut queue_manager).await;
                 } else {
                     eprintln!("Unknown slash command: {}", command.data.name);
+                }
+            }
+            Interaction::Autocomplete(autocomplete) => {
+                let mut queue_manager = self.queue_manager.lock().await;
+                
+                if autocomplete.data.name == config::COMMAND_KICK {
+                    handlers::handle_kick_autocomplete(&autocomplete, &ctx, &mut queue_manager).await;
                 }
             }
             Interaction::Component(component) => {

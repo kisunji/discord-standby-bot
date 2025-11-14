@@ -1,4 +1,5 @@
 use crate::redis_store::RedisStore;
+use crate::translations;
 
 /// Queue size threshold for "one more needed" notification.
 const QUEUE_ALMOST_FULL: usize = 4;
@@ -39,7 +40,7 @@ impl QueueNotification {
     /// Converts notification to Discord message string.
     pub fn to_message(&self) -> String {
         match self {
-            Self::OneMore => "One more".to_string(),
+            Self::OneMore => translations::get_random_one_more().to_string(),
             Self::Ready { users } => {
                 let mentions: Vec<String> = users.iter().map(|id| format!("<@{}>", id)).collect();
                 format!("There are enough users for a game!\n{}", mentions.join(", "))
@@ -250,6 +251,78 @@ impl QueueManager {
 
         // Track the last action
         self.last_action = Some(format!("<@{}> left!", user_id));
+
+        QueueOperationResult::Success {
+            users,
+            waitlist,
+            notification,
+            promoted_user,
+        }
+    }
+
+    /// Kicks a user from the queue by searching for their username or display name.
+    /// Returns updated queue state or error.
+    pub fn kick_user(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+        username: &str,
+        user_id_map: &std::collections::HashMap<String, String>,
+    ) -> QueueOperationResult {
+        // Find user ID by username (case-insensitive partial match)
+        let username_lower = username.to_lowercase();
+        let matched_user_id = user_id_map
+            .iter()
+            .find(|(_, name)| name.to_lowercase().contains(&username_lower))
+            .map(|(id, _)| id.clone());
+
+        let user_id = match matched_user_id {
+            Some(id) => id,
+            None => return QueueOperationResult::Error(format!("User '{}' not found in queue", username)),
+        };
+
+        // Use the existing leave_queue logic
+        match self.store.contains_user(guild_id, channel_id, &user_id) {
+            Ok(false) => return QueueOperationResult::NotInQueue,
+            Err(e) => return QueueOperationResult::Error(format!("Failed to check user: {e:?}")),
+            Ok(true) => {}
+        }
+
+        let users_before = match self.store.get_users(guild_id, channel_id) {
+            Ok(users) => users,
+            Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
+        };
+
+        let user_position = users_before.iter().position(|u| u == &user_id);
+
+        if let Err(e) = self.store.remove_user(guild_id, channel_id, &user_id) {
+            return QueueOperationResult::Error(format!("Failed to remove user: {e:?}"));
+        }
+
+        let all_users = match self.store.get_users(guild_id, channel_id) {
+            Ok(users) => users,
+            Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
+        };
+
+        let (users, waitlist) = Self::split_queue(all_users);
+
+        // Detect if someone was promoted from waitlist
+        let promoted_user = user_position.and_then(|pos| {
+            if pos < QUEUE_FULL && users.len() == QUEUE_FULL && users_before.len() > QUEUE_FULL {
+                users.get(QUEUE_FULL - 1).cloned()
+            } else {
+                None
+            }
+        });
+
+        // Check if we should send a notification after someone is kicked
+        let notification = match users.len() {
+            QUEUE_ALMOST_FULL => Some(QueueNotification::OneMore),
+            _ => None,
+        };
+
+        // Track the last action
+        self.last_action = Some(format!("<@{}> was kicked!", user_id));
 
         QueueOperationResult::Success {
             users,
