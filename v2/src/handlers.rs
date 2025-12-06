@@ -310,45 +310,6 @@ pub async fn handle_leave_queue(
             // Delete old notification message before sending new one or updating queue
             delete_old_notification(ctx, queue_manager, &guild_id, &channel_id).await;
 
-            if let Err(e) = update_queue_message(
-                component,
-                ctx,
-                queue_manager,
-                &guild_id,
-                &channel_id,
-                &users,
-                &waitlist,
-            )
-            .await
-            {
-                eprintln!("Failed to update queue message: {}", e);
-            }
-
-            // Send notification if someone was promoted from waitlist
-            if let Some(promoted_id) = promoted_user {
-                let message = format!("<@{}> you're up!", promoted_id);
-                let _ = component.channel_id.say(&ctx.http, message).await;
-            }
-
-            // Send "One more" notification if queue is at 4 users
-            if let Some(notif) = notification {
-                match component
-                    .channel_id
-                    .say(&ctx.http, notif.to_message())
-                    .await
-                {
-                    Ok(msg) => {
-                        // Store the notification message ID
-                        let _ = queue_manager.set_notification_message_id(
-                            &guild_id,
-                            &channel_id,
-                            msg.id.get() as i64,
-                        );
-                    }
-                    Err(e) => eprintln!("Failed to send notification: {}", e),
-                }
-            }
-            
             // If queue is now empty, close it automatically
             if users.is_empty() && waitlist.is_empty() {
                 let msg_id = match queue_manager.get_message_id(&guild_id, &channel_id) {
@@ -368,6 +329,46 @@ pub async fn handle_leave_queue(
                         .channel_id
                         .edit_message(&ctx.http, MessageId::new(msg_id as u64), edit_message)
                         .await;
+                }
+            } else {
+                // Queue still has users, update normally
+                if let Err(e) = update_queue_message(
+                    component,
+                    ctx,
+                    queue_manager,
+                    &guild_id,
+                    &channel_id,
+                    &users,
+                    &waitlist,
+                )
+                .await
+                {
+                    eprintln!("Failed to update queue message: {}", e);
+                }
+
+                // Send notification if someone was promoted from waitlist
+                if let Some(promoted_id) = promoted_user {
+                    let message = format!("<@{}> you're up!", promoted_id);
+                    let _ = component.channel_id.say(&ctx.http, message).await;
+                }
+
+                // Send "One more" notification if queue is at 4 users
+                if let Some(notif) = notification {
+                    match component
+                        .channel_id
+                        .say(&ctx.http, notif.to_message())
+                        .await
+                    {
+                        Ok(msg) => {
+                            // Store the notification message ID
+                            let _ = queue_manager.set_notification_message_id(
+                                &guild_id,
+                                &channel_id,
+                                msg.id.get() as i64,
+                            );
+                        }
+                        Err(e) => eprintln!("Failed to send notification: {}", e),
+                    }
                 }
             }
         }
