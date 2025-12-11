@@ -40,7 +40,10 @@ impl QueueNotification {
     /// Converts notification to Discord message string.
     pub fn to_message(&self) -> String {
         match self {
-            Self::OneMore => translations::get_random_one_more().to_string(),
+            Self::OneMore => {
+                let (translation, language) = translations::get_random_one_more();
+                format!("{} ||{}||", translation, language)
+            }
             Self::Ready { users } => {
                 let mentions: Vec<String> = users.iter().map(|id| format!("<@{}>", id)).collect();
                 format!("There are enough users for a game!\n{}", mentions.join(", "))
