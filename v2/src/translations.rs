@@ -105,9 +105,6 @@ pub fn get_random_one_more() -> (&'static str, &'static str) {
         // Japanese-Ryukyuan
         ("ちゅーてぃー", "Okinawan"),
 
-        // Korean
-        ("한 개 더", "Korean"),
-
         // Mongolic Languages
         ("Дахиад нэг", "Mongolian"),
 
