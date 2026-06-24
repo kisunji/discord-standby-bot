@@ -17,3 +17,5 @@ serenity = { version = "0.12", default-features = false, features = [
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 warp = "0.3"
 rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

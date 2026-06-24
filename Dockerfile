@@ -1,44 +1,27 @@
-# syntax=docker/dockerfile:1
+FROM rust:latest AS chef
+RUN cargo install cargo-chef
+WORKDIR /app
 
-# Build stage
-FROM golang:1.24-alpine AS builder
-
-# Install git and ca-certificates (git may be needed for private modules)
-RUN apk add --no-cache git ca-certificates tzdata
-
-# Set the working directory
-WORKDIR /build
-
-# Copy go mod and sum files
-COPY go.mod go.sum ./
-
-# Download dependencies
-RUN go mod download && go mod verify
-
-# Copy the source code
+FROM chef AS planner
 COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags='-w -s -extldflags "-static"' \
-    -a -installsuffix cgo \
-    -o app .
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY . .
+RUN cargo build --release
 
-# Final stage - distroless for security and minimal size
-FROM gcr.io/distroless/static:nonroot
-
-# Import from builder
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
-
-# Copy our static executable
-COPY --from=builder /build/app /app
-
-# Use nonroot user for security
-USER nonroot:nonroot
-
-# Expose port for metrics endpoint
-EXPOSE 8080 2112
-
-# Run the binary
-ENTRYPOINT ["/app"]
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/target/release/discord-standby-bot-v2 /app/discord-standby-bot-v2
+CMD ["/app/discord-standby-bot-v2"]

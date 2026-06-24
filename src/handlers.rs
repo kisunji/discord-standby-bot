@@ -5,6 +5,7 @@ use serenity::builder::{
     AutocompleteChoice, CreateAutocompleteResponse, CreateInteractionResponse,
     CreateInteractionResponseMessage,
 };
+use tracing::error;
 
 use crate::messages;
 use crate::queue::{QueueManager, QueueOperationResult};
@@ -41,7 +42,7 @@ pub async fn handle_standby_command(
             users, waitlist, ..
         } => (users, waitlist),
         QueueOperationResult::Error(err) => {
-            eprintln!("Failed to add creator to queue: {}", err);
+            error!("Failed to add creator to queue: {}", err);
             let _ = command
                 .create_response(
                     &ctx.http,
@@ -76,7 +77,11 @@ pub async fn handle_standby_command(
         .create_response(
             &ctx.http,
             serenity::builder::CreateInteractionResponse::Message(
-                messages::create_initial_interaction_response(&user_ids, &waitlist_ids, last_action_text),
+                messages::create_initial_interaction_response(
+                    &user_ids,
+                    &waitlist_ids,
+                    last_action_text,
+                ),
             ),
         )
         .await;
@@ -86,12 +91,12 @@ pub async fn handle_standby_command(
         if let Err(err) =
             queue_manager.create_queue(&guild_id, &channel_id, response_msg.id.get() as i64)
         {
-            eprintln!("Failed to store queue message ID: {}", err);
+            error!("Failed to store queue message ID: {}", err);
             // Cleanup queue/waitlist data since we couldn't store the message ID
             let _ = queue_manager.close_queue(&guild_id, &channel_id);
         }
     } else {
-        eprintln!("Failed to get response message");
+        error!("Failed to get response message");
         // Cleanup queue/waitlist data since we couldn't get the message ID
         let _ = queue_manager.close_queue(&guild_id, &channel_id);
     }
@@ -126,7 +131,7 @@ pub async fn handle_bump_command(
     let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
         Ok(users) => users,
         Err(e) => {
-            eprintln!("Failed to get users: {}", e);
+            error!("Failed to get users: {}", e);
             let _ = command
                 .create_response(
                     &ctx.http,
@@ -193,14 +198,14 @@ pub async fn handle_bump_command(
     {
         Ok(msg) => msg,
         Err(e) => {
-            eprintln!("Failed to send new message: {:?}", e);
+            error!("Failed to send new message: {:?}", e);
             return;
         }
     };
 
     // Update the stored message ID
     if let Err(e) = queue_manager.create_queue(&guild_id, &channel_id, new_msg.id.get() as i64) {
-        eprintln!("Failed to update message ID: {}", e);
+        error!("Failed to update message ID: {}", e);
     }
 }
 
@@ -211,7 +216,8 @@ async fn delete_old_notification(
     guild_id: &str,
     channel_id: &str,
 ) {
-    if let Ok(Some(notif_msg_id)) = queue_manager.get_notification_message_id(guild_id, channel_id) {
+    if let Ok(Some(notif_msg_id)) = queue_manager.get_notification_message_id(guild_id, channel_id)
+    {
         let channel_id_parsed = channel_id.parse::<u64>().ok();
         if let Some(channel_id_u64) = channel_id_parsed {
             let _ = ctx
@@ -224,6 +230,29 @@ async fn delete_old_notification(
                 .await;
         }
         let _ = queue_manager.delete_notification_message_id(guild_id, channel_id);
+    }
+}
+
+/// Helper function to delete old promotion message if it exists.
+async fn delete_old_promotion(
+    ctx: &Context,
+    queue_manager: &mut QueueManager,
+    guild_id: &str,
+    channel_id: &str,
+) {
+    if let Ok(Some(promo_msg_id)) = queue_manager.get_promotion_message_id(guild_id, channel_id) {
+        let channel_id_parsed = channel_id.parse::<u64>().ok();
+        if let Some(channel_id_u64) = channel_id_parsed {
+            let _ = ctx
+                .http
+                .delete_message(
+                    serenity::all::ChannelId::new(channel_id_u64),
+                    MessageId::new(promo_msg_id as u64),
+                    None,
+                )
+                .await;
+        }
+        let _ = queue_manager.delete_promotion_message_id(guild_id, channel_id);
     }
 }
 
@@ -259,7 +288,7 @@ pub async fn handle_join_queue(
             )
             .await
             {
-                eprintln!("Failed to update queue message: {}", e);
+                error!("Failed to update queue message: {}", e);
                 return;
             }
 
@@ -277,13 +306,13 @@ pub async fn handle_join_queue(
                             msg.id.get() as i64,
                         );
                     }
-                    Err(e) => eprintln!("Failed to send notification: {}", e),
+                    Err(e) => error!("Failed to send notification: {}", e),
                 }
             }
         }
         QueueOperationResult::AlreadyInQueue => {}
         QueueOperationResult::Error(err) => {
-            eprintln!("Error adding user to queue: {}", err);
+            error!("Error adding user to queue: {}", err);
         }
         _ => {}
     }
@@ -315,13 +344,16 @@ pub async fn handle_leave_queue(
                 let msg_id = match queue_manager.get_message_id(&guild_id, &channel_id) {
                     Ok(Some(id)) => id,
                     _ => {
-                        eprintln!("Failed to get message ID for queue");
+                        error!("Failed to get message ID for queue");
                         return;
                     }
                 };
 
+                // Delete promotion message when closing queue
+                delete_old_promotion(ctx, queue_manager, &guild_id, &channel_id).await;
+
                 if let Err(e) = queue_manager.close_queue(&guild_id, &channel_id) {
-                    eprintln!("Failed to close queue after last user left: {}", e);
+                    error!("Failed to close queue after last user left: {}", e);
                 } else {
                     // Update the message to show queue is closed with disabled buttons
                     let edit_message = messages::create_closed_queue_message();
@@ -343,13 +375,26 @@ pub async fn handle_leave_queue(
                 )
                 .await
                 {
-                    eprintln!("Failed to update queue message: {}", e);
+                    error!("Failed to update queue message: {}", e);
                 }
 
                 // Send notification if someone was promoted from waitlist
                 if let Some(promoted_id) = promoted_user {
+                    // Delete old promotion message before sending new one
+                    delete_old_promotion(ctx, queue_manager, &guild_id, &channel_id).await;
+
                     let message = format!("<@{}> you're up!", promoted_id);
-                    let _ = component.channel_id.say(&ctx.http, message).await;
+                    match component.channel_id.say(&ctx.http, message).await {
+                        Ok(msg) => {
+                            // Store the promotion message ID
+                            let _ = queue_manager.set_promotion_message_id(
+                                &guild_id,
+                                &channel_id,
+                                msg.id.get() as i64,
+                            );
+                        }
+                        Err(e) => error!("Failed to send promotion notification: {}", e),
+                    }
                 }
 
                 // Send "One more" notification if queue is at 4 users
@@ -367,14 +412,14 @@ pub async fn handle_leave_queue(
                                 msg.id.get() as i64,
                             );
                         }
-                        Err(e) => eprintln!("Failed to send notification: {}", e),
+                        Err(e) => error!("Failed to send notification: {}", e),
                     }
                 }
             }
         }
         QueueOperationResult::NotInQueue => {}
         QueueOperationResult::Error(err) => {
-            eprintln!("Error removing user from queue: {}", err);
+            error!("Error removing user from queue: {}", err);
         }
         _ => {}
     }
@@ -393,13 +438,14 @@ pub async fn handle_close_queue(
     let msg_id = match queue_manager.get_message_id(&guild_id, &channel_id) {
         Ok(Some(id)) => id,
         _ => {
-            eprintln!("Failed to get message ID for queue");
+            error!("Failed to get message ID for queue");
             return;
         }
     };
 
-    // Delete notification message when closing queue
+    // Delete notification and promotion messages when closing queue
     delete_old_notification(ctx, queue_manager, &guild_id, &channel_id).await;
+    delete_old_promotion(ctx, queue_manager, &guild_id, &channel_id).await;
 
     match queue_manager.close_queue(&guild_id, &channel_id) {
         Ok(()) => {
@@ -410,7 +456,7 @@ pub async fn handle_close_queue(
                 .await;
         }
         Err(err) => {
-            eprintln!("Error closing queue: {}", err);
+            error!("Error closing queue: {}", err);
         }
     }
 }
@@ -427,54 +473,58 @@ pub async fn handle_open_queue(
     let user_id = component.user.id.to_string();
 
     if let Err(e) = component.message.delete(&ctx.http).await {
-        eprintln!("Failed to delete closed queue message: {:?}", e);
+        error!("Failed to delete closed queue message: {:?}", e);
     }
 
     // Check if queue already exists
     match queue_manager.queue_exists(&guild_id, &channel_id) {
         Ok(true) => {
-            eprintln!("Queue already exists when trying to open");
+            error!("Queue already exists when trying to open");
             return;
         }
         Err(e) => {
-            eprintln!("Failed to check queue existence: {}", e);
+            error!("Failed to check queue existence: {}", e);
             return;
         }
         _ => {}
     }
 
+    // Add the opener to the queue first (before creating the message)
+    let (users, waitlist) = match queue_manager.join_queue(&guild_id, &channel_id, &user_id) {
+        QueueOperationResult::Success {
+            users, waitlist, ..
+        } => (users, waitlist),
+        QueueOperationResult::Error(err) => {
+            error!("Failed to add opener to queue: {}", err);
+            return;
+        }
+        _ => {
+            error!("Failed to add opener to queue");
+            return;
+        }
+    };
+
+    // Get last action for display
+    let last_action_text = queue_manager.get_last_action();
+
+    // Create the initial message with the opener already in it
     let Ok(msg) = component
         .channel_id
-        .send_message(&ctx.http, messages::create_initial_queue_message(&[], &[], None))
+        .send_message(
+            &ctx.http,
+            messages::create_initial_queue_message(&users, &waitlist, last_action_text),
+        )
         .await
     else {
-        eprintln!("Error sending new queue message");
+        error!("Error sending new queue message");
+        // Cleanup the queue data since we couldn't send the message
+        let _ = queue_manager.close_queue(&guild_id, &channel_id);
         return;
     };
 
-    // Store the message ID first
+    // Store the message ID to link it to the queue data
     if let Err(err) = queue_manager.create_queue(&guild_id, &channel_id, msg.id.get() as i64) {
-        eprintln!("Failed to store new queue message: {}", err);
-        // Try to delete the message since we can't track it
-        let _ = msg.delete(&ctx.http).await;
-        return;
-    }
-
-    // Add the opener to the queue
-    if let QueueOperationResult::Success {
-        users, waitlist, ..
-    } = queue_manager.join_queue(&guild_id, &channel_id, &user_id)
-    {
-        // Get last action for display
-        let last_action_text = queue_manager.get_last_action();
-
-        let edit_message = messages::create_active_queue_message(&users, &waitlist, last_action_text);
-        let _ = component
-            .channel_id
-            .edit_message(&ctx.http, msg.id, edit_message)
-            .await;
-    } else {
-        eprintln!("Failed to add opener to queue");
+        error!("Failed to store new queue message: {}", err);
         // Cleanup on failure
         let _ = queue_manager.close_queue(&guild_id, &channel_id);
         let _ = msg.delete(&ctx.http).await;
@@ -556,7 +606,7 @@ pub async fn handle_kick_command(
     let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
         Ok(users) => users,
         Err(e) => {
-            eprintln!("Failed to get users: {}", e);
+            error!("Failed to get users: {}", e);
             let _ = command
                 .create_response(
                     &ctx.http,
@@ -589,18 +639,24 @@ pub async fn handle_kick_command(
         }
     };
 
-    let mut user_id_map = std::collections::HashMap::new();
+    // Map each queued user ID to every name it can be addressed by (server
+    // nickname, global display name, username) so a kick can match whichever
+    // form was copy-pasted.
+    let mut user_id_map: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for user_id_str in &all_users {
         if let Ok(uid) = user_id_str.parse::<u64>() {
             let user_id = serenity::all::UserId::new(uid);
             if let Ok(member) = guild_id_parsed.member(&ctx.http, user_id).await {
-                // Try display name first, then username
-                let name = if let Some(nick) = member.nick {
-                    nick
-                } else {
-                    member.user.name.clone()
-                };
-                user_id_map.insert(user_id_str.clone(), name);
+                let mut names = Vec::new();
+                if let Some(nick) = &member.nick {
+                    names.push(nick.clone());
+                }
+                if let Some(global_name) = &member.user.global_name {
+                    names.push(global_name.clone());
+                }
+                names.push(member.user.name.clone());
+                user_id_map.insert(user_id_str.clone(), names);
             }
         }
     }
@@ -638,20 +694,22 @@ pub async fn handle_kick_command(
             let last_action_text = queue_manager.get_last_action();
 
             // Update the queue message
-            let edit_message = messages::create_active_queue_message(&users, &waitlist, last_action_text);
+            let edit_message =
+                messages::create_active_queue_message(&users, &waitlist, last_action_text);
             if let Err(e) = command
                 .channel_id
                 .edit_message(&ctx.http, MessageId::new(msg_id as u64), edit_message)
                 .await
             {
-                eprintln!("Failed to edit message: {:?}", e);
+                error!("Failed to edit message: {:?}", e);
             }
 
-            // Send confirmation
+            // Send confirmation, naming whichever user is no longer in the queue.
             let kicked_user = user_id_map
                 .iter()
-                .find(|(_, name)| name.to_lowercase().contains(&username.to_lowercase()))
-                .map(|(_, name)| name.as_str())
+                .find(|(id, _)| !users.contains(id) && !waitlist.contains(id))
+                .and_then(|(_, names)| names.first())
+                .map(|name| name.as_str())
                 .unwrap_or(username);
 
             let _ = command
@@ -667,11 +725,7 @@ pub async fn handle_kick_command(
 
             // Send notification if needed
             if let Some(notif) = notification {
-                match command
-                    .channel_id
-                    .say(&ctx.http, notif.to_message())
-                    .await
-                {
+                match command.channel_id.say(&ctx.http, notif.to_message()).await {
                     Ok(msg) => {
                         let _ = queue_manager.set_notification_message_id(
                             &guild_id,
@@ -679,22 +733,42 @@ pub async fn handle_kick_command(
                             msg.id.get() as i64,
                         );
                     }
-                    Err(e) => eprintln!("Failed to send notification: {}", e),
+                    Err(e) => error!("Failed to send notification: {}", e),
                 }
             }
 
             // Send promoted notification if needed
             if let Some(promoted_id) = promoted_user {
-                let _ = command
+                // Delete old promotion message before sending new one
+                delete_old_promotion(ctx, queue_manager, &guild_id, &channel_id).await;
+
+                match command
                     .channel_id
-                    .say(&ctx.http, format!("<@{}> has been promoted from the waitlist to the queue!", promoted_id))
-                    .await;
+                    .say(
+                        &ctx.http,
+                        format!("<@{}> you're up!", promoted_id),
+                    )
+                    .await
+                {
+                    Ok(msg) => {
+                        // Store the promotion message ID
+                        let _ = queue_manager.set_promotion_message_id(
+                            &guild_id,
+                            &channel_id,
+                            msg.id.get() as i64,
+                        );
+                    }
+                    Err(e) => error!("Failed to send promotion notification: {}", e),
+                }
             }
 
             // If queue is now empty, close it automatically
             if users.is_empty() && waitlist.is_empty() {
+                // Delete promotion message when closing queue
+                delete_old_promotion(ctx, queue_manager, &guild_id, &channel_id).await;
+
                 if let Err(e) = queue_manager.close_queue(&guild_id, &channel_id) {
-                    eprintln!("Failed to close queue after last user was kicked: {}", e);
+                    error!("Failed to close queue after last user was kicked: {}", e);
                 } else {
                     // Update the message to show queue is closed with disabled buttons
                     let edit_message = messages::create_closed_queue_message();
@@ -821,13 +895,9 @@ pub async fn handle_kick_autocomplete(
                 };
 
                 // Filter by the focused input (case-insensitive)
-                if focused_value.is_empty()
-                    || display_name.to_lowercase().contains(&focused_lower)
+                if focused_value.is_empty() || display_name.to_lowercase().contains(&focused_lower)
                 {
-                    choices.push(AutocompleteChoice::new(
-                        display_name.clone(),
-                        display_name,
-                    ));
+                    choices.push(AutocompleteChoice::new(display_name.clone(), display_name));
 
                     // Discord limits autocomplete to 25 choices
                     if choices.len() >= 25 {

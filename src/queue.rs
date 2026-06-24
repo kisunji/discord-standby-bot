@@ -42,11 +42,14 @@ impl QueueNotification {
         match self {
             Self::OneMore => {
                 let (translation, language) = translations::get_random_one_more();
-                format!("{} ||{}||", translation, language)
+                format!("{} (||{}||)", translation, language)
             }
             Self::Ready { users } => {
                 let mentions: Vec<String> = users.iter().map(|id| format!("<@{}>", id)).collect();
-                format!("There are enough users for a game!\n{}", mentions.join(", "))
+                format!(
+                    "There are enough users for a game!\n{}",
+                    mentions.join(", ")
+                )
             }
         }
     }
@@ -136,6 +139,40 @@ impl QueueManager {
             .map_err(|e| format!("Failed to delete notification message ID: {e:?}"))
     }
 
+    /// Stores the promotion message ID.
+    pub fn set_promotion_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+        message_id: i64,
+    ) -> Result<(), String> {
+        self.store
+            .set_promotion_message_id(guild_id, channel_id, message_id)
+            .map_err(|e| format!("Failed to store promotion message ID: {e:?}"))
+    }
+
+    /// Retrieves the promotion message ID.
+    pub fn get_promotion_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+    ) -> Result<Option<i64>, String> {
+        self.store
+            .get_promotion_message_id(guild_id, channel_id)
+            .map_err(|e| format!("Failed to get promotion message ID: {e:?}"))
+    }
+
+    /// Deletes the promotion message ID.
+    pub fn delete_promotion_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+    ) -> Result<(), String> {
+        self.store
+            .delete_promotion_message_id(guild_id, channel_id)
+            .map_err(|e| format!("Failed to delete promotion message ID: {e:?}"))
+    }
+
     /// Retrieves all users in the queue and waitlist.
     pub fn get_users(&mut self, guild_id: &str, channel_id: &str) -> Result<Vec<String>, String> {
         self.store
@@ -169,29 +206,41 @@ impl QueueManager {
         channel_id: &str,
         user_id: &str,
     ) -> QueueOperationResult {
-        match self.store.contains_user(guild_id, channel_id, user_id) {
-            Ok(true) => return QueueOperationResult::AlreadyInQueue,
-            Err(e) => return QueueOperationResult::Error(format!("Failed to check user: {e:?}")),
-            Ok(false) => {}
+        let mut all_users = match self.store.get_users(guild_id, channel_id) {
+            Ok(users) => users,
+            Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
+        };
+
+        if all_users.iter().any(|u| u == user_id) {
+            return QueueOperationResult::AlreadyInQueue;
         }
 
         if let Err(e) = self.store.add_user(guild_id, channel_id, user_id) {
             return QueueOperationResult::Error(format!("Failed to add user: {e:?}"));
         }
 
-        let all_users = match self.store.get_users(guild_id, channel_id) {
-            Ok(users) => users,
-            Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
-        };
+        // Reflect the write locally instead of re-reading from Redis. A
+        // read-after-write on a fresh connection can observe stale (empty)
+        // data when reads are served by a proxy/replica, which would render
+        // the queue as "No users in queue" right after someone joins.
+        all_users.push(user_id.to_string());
 
         let (users, waitlist) = Self::split_queue(all_users);
 
-        let notification = match users.len() {
-            QUEUE_ALMOST_FULL => Some(QueueNotification::OneMore),
-            QUEUE_FULL => Some(QueueNotification::Ready {
-                users: users.clone(),
-            }),
-            _ => None,
+        // Only send notifications if the user joined the main queue (not waitlist)
+        // This prevents duplicate Ready notifications when someone joins position 6+
+        let user_in_main_queue = users.contains(&user_id.to_string());
+
+        let notification = if user_in_main_queue {
+            match users.len() {
+                QUEUE_ALMOST_FULL => Some(QueueNotification::OneMore),
+                QUEUE_FULL => Some(QueueNotification::Ready {
+                    users: users.clone(),
+                }),
+                _ => None,
+            }
+        } else {
+            None
         };
 
         // Track the last action
@@ -213,43 +262,43 @@ impl QueueManager {
         channel_id: &str,
         user_id: &str,
     ) -> QueueOperationResult {
-        match self.store.contains_user(guild_id, channel_id, user_id) {
-            Ok(false) => return QueueOperationResult::NotInQueue,
-            Err(e) => return QueueOperationResult::Error(format!("Failed to check user: {e:?}")),
-            Ok(true) => {}
-        }
-
         let users_before = match self.store.get_users(guild_id, channel_id) {
             Ok(users) => users,
             Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
         };
 
-        let user_position = users_before.iter().position(|u| u == user_id);
+        let user_position = match users_before.iter().position(|u| u == user_id) {
+            Some(pos) => pos,
+            None => return QueueOperationResult::NotInQueue,
+        };
 
         if let Err(e) = self.store.remove_user(guild_id, channel_id, user_id) {
             return QueueOperationResult::Error(format!("Failed to remove user: {e:?}"));
         }
 
-        let all_users = match self.store.get_users(guild_id, channel_id) {
-            Ok(users) => users,
-            Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
-        };
+        // Reflect the write locally instead of re-reading from Redis to avoid
+        // a stale read-after-write that could misrepresent the queue state.
+        let mut all_users = users_before.clone();
+        all_users.retain(|u| u != user_id);
 
         let (users, waitlist) = Self::split_queue(all_users);
 
         // Detect if someone was promoted from waitlist
-        let promoted_user = user_position.and_then(|pos| {
-            if pos < QUEUE_FULL && users.len() == QUEUE_FULL && users_before.len() > QUEUE_FULL {
-                users.get(QUEUE_FULL - 1).cloned()
-            } else {
-                None
-            }
-        });
+        let promoted_user = if user_position < QUEUE_FULL
+            && users.len() == QUEUE_FULL
+            && users_before.len() > QUEUE_FULL
+        {
+            users.get(QUEUE_FULL - 1).cloned()
+        } else {
+            None
+        };
 
         // Check if we should send a notification after someone leaves
-        let notification = match users.len() {
-            QUEUE_ALMOST_FULL => Some(QueueNotification::OneMore),
-            _ => None,
+        // Don't send notification if someone was promoted (they get their own message)
+        let notification = if promoted_user.is_none() && users.len() == QUEUE_ALMOST_FULL {
+            Some(QueueNotification::OneMore)
+        } else {
+            None
         };
 
         // Track the last action
@@ -263,65 +312,113 @@ impl QueueManager {
         }
     }
 
+    /// Resolves a kick query to a queued user ID.
+    ///
+    /// Matching is tried in order of decreasing confidence:
+    /// 1. A mention (`<@id>` / `<@!id>`) or raw numeric ID that is in the queue.
+    /// 2. An exact (case-insensitive) match against one of a user's names.
+    /// 3. A substring match against one of a user's names.
+    fn resolve_kick_target(
+        query: &str,
+        user_id_map: &std::collections::HashMap<String, Vec<String>>,
+    ) -> Option<String> {
+        let query = query.trim();
+
+        // 1. Mention or raw ID: extract the digits and check queue membership.
+        let id_candidate: String = query
+            .trim_start_matches("<@!")
+            .trim_start_matches("<@")
+            .trim_end_matches('>')
+            .to_string();
+        if !id_candidate.is_empty()
+            && id_candidate.chars().all(|c| c.is_ascii_digit())
+            && user_id_map.contains_key(&id_candidate)
+        {
+            return Some(id_candidate);
+        }
+
+        // Strip a leading '@' that often comes along when pasting a handle.
+        let needle = query.trim_start_matches('@').to_lowercase();
+        if needle.is_empty() {
+            return None;
+        }
+
+        // 2. Exact name match.
+        if let Some((id, _)) = user_id_map
+            .iter()
+            .find(|(_, names)| names.iter().any(|n| n.to_lowercase() == needle))
+        {
+            return Some(id.clone());
+        }
+
+        // 3. Substring name match.
+        user_id_map
+            .iter()
+            .find(|(_, names)| names.iter().any(|n| n.to_lowercase().contains(&needle)))
+            .map(|(id, _)| id.clone())
+    }
+
     /// Kicks a user from the queue by searching for their username or display name.
+    ///
+    /// `user_id_map` maps each queued user ID to all of the name variants it can
+    /// be addressed by (server nickname, global display name, username). The
+    /// `query` may be a raw user ID, a mention (`<@id>` / `<@!id>`), or any of
+    /// those names, optionally prefixed with `@`. This makes it possible to kick
+    /// by copy-pasting a username tag rather than relying on autocomplete.
+    ///
     /// Returns updated queue state or error.
     pub fn kick_user(
         &mut self,
         guild_id: &str,
         channel_id: &str,
-        username: &str,
-        user_id_map: &std::collections::HashMap<String, String>,
+        query: &str,
+        user_id_map: &std::collections::HashMap<String, Vec<String>>,
     ) -> QueueOperationResult {
-        // Find user ID by username (case-insensitive partial match)
-        let username_lower = username.to_lowercase();
-        let matched_user_id = user_id_map
-            .iter()
-            .find(|(_, name)| name.to_lowercase().contains(&username_lower))
-            .map(|(id, _)| id.clone());
-
-        let user_id = match matched_user_id {
+        let user_id = match Self::resolve_kick_target(query, user_id_map) {
             Some(id) => id,
-            None => return QueueOperationResult::Error(format!("User '{}' not found in queue", username)),
+            None => {
+                return QueueOperationResult::Error(format!("User '{}' not found in queue", query))
+            }
         };
 
         // Use the existing leave_queue logic
-        match self.store.contains_user(guild_id, channel_id, &user_id) {
-            Ok(false) => return QueueOperationResult::NotInQueue,
-            Err(e) => return QueueOperationResult::Error(format!("Failed to check user: {e:?}")),
-            Ok(true) => {}
-        }
-
         let users_before = match self.store.get_users(guild_id, channel_id) {
             Ok(users) => users,
             Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
         };
 
-        let user_position = users_before.iter().position(|u| u == &user_id);
+        let user_position = match users_before.iter().position(|u| u == &user_id) {
+            Some(pos) => pos,
+            None => return QueueOperationResult::NotInQueue,
+        };
 
         if let Err(e) = self.store.remove_user(guild_id, channel_id, &user_id) {
             return QueueOperationResult::Error(format!("Failed to remove user: {e:?}"));
         }
 
-        let all_users = match self.store.get_users(guild_id, channel_id) {
-            Ok(users) => users,
-            Err(e) => return QueueOperationResult::Error(format!("Failed to get users: {e:?}")),
-        };
+        // Reflect the write locally instead of re-reading from Redis to avoid
+        // a stale read-after-write that could misrepresent the queue state.
+        let mut all_users = users_before.clone();
+        all_users.retain(|u| u != &user_id);
 
         let (users, waitlist) = Self::split_queue(all_users);
 
         // Detect if someone was promoted from waitlist
-        let promoted_user = user_position.and_then(|pos| {
-            if pos < QUEUE_FULL && users.len() == QUEUE_FULL && users_before.len() > QUEUE_FULL {
-                users.get(QUEUE_FULL - 1).cloned()
-            } else {
-                None
-            }
-        });
+        let promoted_user = if user_position < QUEUE_FULL
+            && users.len() == QUEUE_FULL
+            && users_before.len() > QUEUE_FULL
+        {
+            users.get(QUEUE_FULL - 1).cloned()
+        } else {
+            None
+        };
 
         // Check if we should send a notification after someone is kicked
-        let notification = match users.len() {
-            QUEUE_ALMOST_FULL => Some(QueueNotification::OneMore),
-            _ => None,
+        // Don't send notification if someone was promoted (they get their own message)
+        let notification = if promoted_user.is_none() && users.len() == QUEUE_ALMOST_FULL {
+            Some(QueueNotification::OneMore)
+        } else {
+            None
         };
 
         // Track the last action

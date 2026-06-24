@@ -15,6 +15,7 @@ use serenity::async_trait;
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::Interaction;
 use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 use warp::Filter;
 
 use crate::queue::QueueManager;
@@ -27,7 +28,7 @@ struct Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        println!("{} is connected!", ready.user.name);
+        info!("{} is connected!", ready.user.name);
         ctx.set_presence(
             Some(ActivityData::custom(config::BOT_PRESENCE)),
             OnlineStatus::Online,
@@ -55,15 +56,15 @@ impl EventHandler for Handler {
                     CreateCommandOption::new(
                         CommandOptionType::String,
                         "username",
-                        "Username or display name of the user to kick",
+                        "Username, display name, or @mention of the user to kick",
                     )
                     .required(true)
                     .set_autocomplete(true),
                 ),
         )
         .await;
-        
-        println!("Global slash commands registered");
+
+        info!("Global slash commands registered");
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -78,7 +79,7 @@ impl EventHandler for Handler {
                 } else if command.data.name == config::COMMAND_KICK {
                     handlers::handle_kick_command(&command, &ctx, &mut queue_manager).await;
                 } else {
-                    eprintln!("Unknown slash command: {}", command.data.name);
+                    warn!("Unknown slash command: {}", command.data.name);
                 }
             }
             Interaction::Autocomplete(autocomplete) => {
@@ -115,7 +116,7 @@ impl EventHandler for Handler {
                     &channel_id,
                     component.message.id.get(),
                 ) {
-                    eprintln!("Stale queue message clicked");
+                    warn!("Stale queue message clicked");
                     return;
                 }
 
@@ -129,7 +130,7 @@ impl EventHandler for Handler {
                     "close_queue" => {
                         handlers::handle_close_queue(&component, &ctx, &mut queue_manager).await;
                     }
-                    _ => eprintln!("Unknown button: {custom_id}"),
+                    _ => warn!("Unknown button: {custom_id}"),
                 }
             }
             _ => {}
@@ -139,8 +140,25 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let redis_url = config::redis_url();
-    let store = redis_store::RedisStore::new(&redis_url).expect("Failed to connect to Redis");
+    let store = match redis_store::RedisStore::new(&redis_url) {
+        Ok(store) => {
+            info!("Connected to Redis");
+            store
+        }
+        Err(e) => {
+            error!("Failed to connect to Redis: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let queue_manager = QueueManager::new(store);
     let handler = Handler {
@@ -157,14 +175,15 @@ async fn main() {
     tokio::spawn(async {
         let health_check = warp::path::end()
             .map(|| warp::reply::with_status("OK", warp::http::StatusCode::OK));
-        
-        println!("Starting health check server on port 8000...");
+
+        info!("Starting health check server on port 8000");
         warp::serve(health_check).run(([0, 0, 0, 0], 8000)).await;
     });
 
-    println!("Starting Discord bot...");
+    info!("Starting Discord bot");
 
     if let Err(e) = client.start().await {
-        eprintln!("Client error: {e}");
+        error!("Client error: {e}");
+        std::process::exit(1);
     }
 }

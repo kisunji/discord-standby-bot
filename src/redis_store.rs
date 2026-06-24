@@ -6,6 +6,7 @@ use redis::{Client, Commands, RedisResult};
 /// - `{guild_id}.{channel_id}` → Discord message ID (i64)
 /// - `{guild_id}.{channel_id}.queue` → Ordered list of user IDs
 /// - `{guild_id}.{channel_id}.notification` → Notification message ID (i64)
+/// - `{guild_id}.{channel_id}.promotion` → Promotion message ID (i64)
 pub struct RedisStore {
     client: Client,
 }
@@ -35,6 +36,11 @@ impl RedisStore {
     /// Constructs the Redis key for storing notification message ID.
     fn notification_key(guild_id: &str, channel_id: &str) -> String {
         format!("{guild_id}.{channel_id}.notification")
+    }
+
+    /// Constructs the Redis key for storing promotion message ID.
+    fn promotion_key(guild_id: &str, channel_id: &str) -> String {
+        format!("{guild_id}.{channel_id}.promotion")
     }
 
     /// Checks if a queue exists for the given guild and channel.
@@ -83,17 +89,6 @@ impl RedisStore {
         conn.lrange(Self::queue_key(guild_id, channel_id), 0, -1)
     }
 
-    /// Checks if a user is in the queue.
-    pub fn contains_user(
-        &mut self,
-        guild_id: &str,
-        channel_id: &str,
-        user_id: &str,
-    ) -> RedisResult<bool> {
-        let users = self.get_users(guild_id, channel_id)?;
-        Ok(users.iter().any(|u| u == user_id))
-    }
-
     /// Stores the notification message ID.
     pub fn set_notification_message_id(
         &mut self,
@@ -127,13 +122,47 @@ impl RedisStore {
             .query(&mut conn)
     }
 
-    /// Deletes all queue data (message ID, user list, and notification) for a guild/channel.
+    /// Stores the promotion message ID.
+    pub fn set_promotion_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+        message_id: i64,
+    ) -> RedisResult<()> {
+        let mut conn = self.get_connection()?;
+        conn.set(Self::promotion_key(guild_id, channel_id), message_id)
+    }
+
+    /// Retrieves the promotion message ID.
+    pub fn get_promotion_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+    ) -> RedisResult<Option<i64>> {
+        let mut conn = self.get_connection()?;
+        conn.get(Self::promotion_key(guild_id, channel_id))
+    }
+
+    /// Deletes the promotion message ID.
+    pub fn delete_promotion_message_id(
+        &mut self,
+        guild_id: &str,
+        channel_id: &str,
+    ) -> RedisResult<()> {
+        let mut conn = self.get_connection()?;
+        redis::cmd("DEL")
+            .arg(&Self::promotion_key(guild_id, channel_id))
+            .query(&mut conn)
+    }
+
+    /// Deletes all queue data (message ID, user list, notification, and promotion) for a guild/channel.
     pub fn delete_queue(&mut self, guild_id: &str, channel_id: &str) -> RedisResult<()> {
         let mut conn = self.get_connection()?;
         redis::cmd("DEL")
             .arg(&Self::message_key(guild_id, channel_id))
             .arg(&Self::queue_key(guild_id, channel_id))
             .arg(&Self::notification_key(guild_id, channel_id))
+            .arg(&Self::promotion_key(guild_id, channel_id))
             .query(&mut conn)
     }
 }
