@@ -22,7 +22,7 @@ pub fn get_random_one_more() -> (&'static str, &'static str) {
         ("Još jedan", "Croatian/Serbian/Bosnian"),
         ("Още един", "Bulgarian"),
         ("Ένας ακόμα", "Greek"),
-        ("Een meer", "Dutch"),
+        ("Nog één", "Dutch"),
         ("En till", "Swedish"),
         ("En til", "Norwegian"),
         ("Én mere", "Danish"),
@@ -34,22 +34,22 @@ pub fn get_random_one_more() -> (&'static str, &'static str) {
         ("Eitt til", "Icelandic"),
         ("یکی دیگر", "Persian"),
         ("एक और", "Hindi"),
-        ("আরও একটি", "Bengali"),
+        ("আরও একজন", "Bengali"),
         ("ایک اور", "Urdu"),
         ("ਇੱਕ ਹੋਰ", "Punjabi"),
         ("એક વધુ", "Gujarati"),
-        ("ಇನ್ನೂ ಒಂದು", "Kannada"),
-        ("ఇంకా ఒకటి", "Telugu"),
-        ("இன்னும் ஒன்று", "Tamil"),
-        ("ഒന്നുകൂടി", "Malayalam"),
-        ("තවත් එකක්", "Sinhala"),
+        ("ಇನ್ನೂ ಒಬ್ಬರು", "Kannada"),
+        ("ఇంకా ఒకరు", "Telugu"),
+        ("இன்னும் ஒருவர்", "Tamil"),
+        ("ഒരാൾ കൂടി", "Malayalam"),
+        ("තවත් කෙනෙක්", "Sinhala"),
 
         // Sino-Tibetan Languages
-        ("再来一个", "Chinese Simplified"),
-        ("再來一個", "Chinese Traditional"),
-        ("もう一つ", "Japanese"),
-        ("하나 더", "Korean"),
-        ("နောက်တစ်ခု", "Burmese"),
+        ("再来一个人", "Chinese Simplified"),
+        ("再來一個人", "Chinese Traditional"),
+        ("もう一人", "Japanese"),
+        ("한 명 더", "Korean"),
+        ("နောက်တစ်ယောက်", "Burmese"),
         ("ཡང་གཅིག", "Tibetan"),
 
         // Semitic Languages
@@ -58,7 +58,7 @@ pub fn get_random_one_more() -> (&'static str, &'static str) {
         ("ሌላ አንድ", "Amharic"),
 
         // Turkic Languages
-        ("Bir tane daha", "Turkish"),
+        ("Bir kişi daha", "Turkish"),
         ("Тағы бір", "Kazakh"),
         ("Yana bitta", "Uzbek"),
         ("Дагы бир", "Kyrgyz"),
@@ -76,9 +76,9 @@ pub fn get_random_one_more() -> (&'static str, &'static str) {
         ("Enye eyengeziwe", "Zulu"),
 
         // Austronesian Languages
-        ("Isa pa", "Tagalog/Filipino"),
-        ("Satu lagi", "Indonesian/Malay"),
-        ("Isa pa", "Cebuano"),
+        ("Isa pang tao", "Tagalog/Filipino"),
+        ("Satu orang lagi", "Indonesian/Malay"),
+        ("Usa pa ka tawo", "Cebuano"),
         ("Tasi tano", "Chamorro"),
         ("Kotahi anō", "Maori"),
         ("E tasi atu", "Samoan"),
@@ -87,20 +87,20 @@ pub fn get_random_one_more() -> (&'static str, &'static str) {
         ("Še jeden", "Slovenian"),
 
         // Dravidian Languages
-        ("ಇನ್ನೊಂದು", "Kannada"),
-        ("மேலும் ஒன்று", "Tamil"),
+        ("ಇನ್ನೊಬ್ಬರು", "Kannada"),
+        ("மேலும் ஒருவர்", "Tamil"),
 
         // Constructed Languages
         ("Unu pli", "Esperanto"),
         ("Unu pluse", "Interlingua"),
 
         // Austroasiatic Languages
-        ("មួយទៀត", "Khmer"),
-        ("ອີກອັນນຶ່ງ", "Lao"),
-        ("Thêm một", "Vietnamese"),
+        ("ម្នាក់ទៀត", "Khmer"),
+        ("ອີກຄົນນຶ່ງ", "Lao"),
+        ("Thêm một người", "Vietnamese"),
 
         // Tai-Kadai Languages
-        ("อีกหนึ่ง", "Thai"),
+        ("อีกหนึ่งคน", "Thai"),
 
         // Japanese-Ryukyuan
         ("ちゅーてぃー", "Okinawan"),
