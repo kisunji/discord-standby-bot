@@ -6,6 +6,9 @@ use serenity::all::{
 
 const QUEUE_COLOR_ACTIVE: u32 = 0x0099_FF;
 const QUEUE_COLOR_CLOSED: u32 = 0x8080_80;
+const SHAME_COLOR: u32 = 0xCC00_00;
+const SHAME_THUMBNAIL: &str =
+    "https://static.wikia.nocookie.net/gameofthrones/images/4/4d/Shame_Septa.jpg";
 const QUEUE_THUMBNAIL: &str = "https://static.wikia.nocookie.net/valorant/images/c/c4/We_Did_It_Team_Spray.png/revision/latest?cb=20240627151137";
 
 const BUTTON_JOIN: &str = "join_queue";
@@ -112,6 +115,29 @@ pub fn create_active_queue_message(users: &[String], waitlist: &[String], last_a
     let buttons = create_queue_buttons(false);
 
     EditMessage::new().embed(embed).components(vec![buttons])
+}
+
+/// Creates a for-fun "shame" message embed naming the shamer, the target, and the reason.
+///
+/// Easter egg: shaming noverlap, who coded this bot, turns the shame back on the
+/// shamer regardless of the supplied reason.
+pub fn create_shame_message(shamer_id: u64, target_id: u64, reason: &str) -> CreateMessage {
+    let description = if target_id == crate::config::NOVERLAP_USER_ID {
+        format!(
+            "<@{shamer_id}> tried to shame <@{target_id}> who coded this bot! \
+             Shame on <@{shamer_id}> for such impudence"
+        )
+    } else {
+        format!("<@{shamer_id}> has shamed <@{target_id}> for **{reason}**")
+    };
+
+    let embed = CreateEmbed::new()
+        .title("🔔 Shame! 🔔")
+        .color(SHAME_COLOR)
+        .description(description)
+        .thumbnail(SHAME_THUMBNAIL);
+
+    CreateMessage::new().add_embed(embed)
 }
 
 /// Creates message edit for closed queue with Open button.

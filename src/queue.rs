@@ -318,68 +318,17 @@ impl QueueManager {
     /// 1. A mention (`<@id>` / `<@!id>`) or raw numeric ID that is in the queue.
     /// 2. An exact (case-insensitive) match against one of a user's names.
     /// 3. A substring match against one of a user's names.
-    fn resolve_kick_target(
-        query: &str,
-        user_id_map: &std::collections::HashMap<String, Vec<String>>,
-    ) -> Option<String> {
-        let query = query.trim();
-
-        // 1. Mention or raw ID: extract the digits and check queue membership.
-        let id_candidate: String = query
-            .trim_start_matches("<@!")
-            .trim_start_matches("<@")
-            .trim_end_matches('>')
-            .to_string();
-        if !id_candidate.is_empty()
-            && id_candidate.chars().all(|c| c.is_ascii_digit())
-            && user_id_map.contains_key(&id_candidate)
-        {
-            return Some(id_candidate);
-        }
-
-        // Strip a leading '@' that often comes along when pasting a handle.
-        let needle = query.trim_start_matches('@').to_lowercase();
-        if needle.is_empty() {
-            return None;
-        }
-
-        // 2. Exact name match.
-        if let Some((id, _)) = user_id_map
-            .iter()
-            .find(|(_, names)| names.iter().any(|n| n.to_lowercase() == needle))
-        {
-            return Some(id.clone());
-        }
-
-        // 3. Substring name match.
-        user_id_map
-            .iter()
-            .find(|(_, names)| names.iter().any(|n| n.to_lowercase().contains(&needle)))
-            .map(|(id, _)| id.clone())
-    }
-
-    /// Kicks a user from the queue by searching for their username or display name.
+    /// Kicks a user from the queue by their Discord user ID.
     ///
-    /// `user_id_map` maps each queued user ID to all of the name variants it can
-    /// be addressed by (server nickname, global display name, username). The
-    /// `query` may be a raw user ID, a mention (`<@id>` / `<@!id>`), or any of
-    /// those names, optionally prefixed with `@`. This makes it possible to kick
-    /// by copy-pasting a username tag rather than relying on autocomplete.
-    ///
-    /// Returns updated queue state or error.
+    /// Returns [`QueueOperationResult::NotInQueue`] if the user is not currently
+    /// in the queue or waitlist, otherwise returns the updated queue state.
     pub fn kick_user(
         &mut self,
         guild_id: &str,
         channel_id: &str,
-        query: &str,
-        user_id_map: &std::collections::HashMap<String, Vec<String>>,
+        user_id: &str,
     ) -> QueueOperationResult {
-        let user_id = match Self::resolve_kick_target(query, user_id_map) {
-            Some(id) => id,
-            None => {
-                return QueueOperationResult::Error(format!("User '{}' not found in queue", query))
-            }
-        };
+        let user_id = user_id.to_string();
 
         // Use the existing leave_queue logic
         let users_before = match self.store.get_users(guild_id, channel_id) {

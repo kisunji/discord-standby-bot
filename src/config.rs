@@ -31,4 +31,13 @@ pub const COMMAND_BUMP_DESC: &str = "Bump the queue message to the bottom of cha
 pub const COMMAND_KICK: &str = "kick";
 
 /// Description shown in Discord for the kick command.
-pub const COMMAND_KICK_DESC: &str = "Kick a user from the queue by username";
+pub const COMMAND_KICK_DESC: &str = "Kick a user from the queue";
+
+/// Slash command name for shaming a user.
+pub const COMMAND_SHAME: &str = "shame";
+
+/// Description shown in Discord for the shame command.
+pub const COMMAND_SHAME_DESC: &str = "Publicly shame someone";
+
+/// Discord user ID of noverlap, who coded this bot. Shaming them backfires.
+pub const NOVERLAP_USER_ID: u64 = 88437130354774016;

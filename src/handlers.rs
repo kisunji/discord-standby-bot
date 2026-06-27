@@ -1,10 +1,7 @@
 //! Interaction handlers for Discord commands and button clicks.
 
 use serenity::all::{CommandInteraction, ComponentInteraction, Context, MessageId};
-use serenity::builder::{
-    AutocompleteChoice, CreateAutocompleteResponse, CreateInteractionResponse,
-    CreateInteractionResponseMessage,
-};
+use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
 use tracing::error;
 
 use crate::messages;
@@ -584,16 +581,25 @@ pub async fn handle_kick_command(
         return;
     }
 
-    // Get the username parameter
-    let username = match command.data.options.first() {
-        Some(option) => option.value.as_str().unwrap_or(""),
+    // Resolve the target user the same way /shame does: a Discord user option
+    // gives us the user ID directly, with no name guessing required.
+    let target_id = command.data.options.iter().find_map(|opt| {
+        if opt.name == "user" {
+            opt.value.as_user_id()
+        } else {
+            None
+        }
+    });
+
+    let target_id = match target_id {
+        Some(id) => id,
         None => {
             let _ = command
                 .create_response(
                     &ctx.http,
                     serenity::builder::CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content("Please provide a username")
+                            .content("Please specify a user to kick")
                             .ephemeral(true),
                     ),
                 )
@@ -601,68 +607,9 @@ pub async fn handle_kick_command(
             return;
         }
     };
-
-    // Get all users in the queue
-    let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
-        Ok(users) => users,
-        Err(e) => {
-            error!("Failed to get users: {}", e);
-            let _ = command
-                .create_response(
-                    &ctx.http,
-                    serenity::builder::CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Failed to get queue users")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-    };
-
-    // Build a map of user IDs to usernames
-    let guild_id_parsed = match guild_id.parse::<u64>() {
-        Ok(id) => serenity::all::GuildId::new(id),
-        Err(_) => {
-            let _ = command
-                .create_response(
-                    &ctx.http,
-                    serenity::builder::CreateInteractionResponse::Message(
-                        CreateInteractionResponseMessage::new()
-                            .content("Invalid guild ID")
-                            .ephemeral(true),
-                    ),
-                )
-                .await;
-            return;
-        }
-    };
-
-    // Map each queued user ID to every name it can be addressed by (server
-    // nickname, global display name, username) so a kick can match whichever
-    // form was copy-pasted.
-    let mut user_id_map: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for user_id_str in &all_users {
-        if let Ok(uid) = user_id_str.parse::<u64>() {
-            let user_id = serenity::all::UserId::new(uid);
-            if let Ok(member) = guild_id_parsed.member(&ctx.http, user_id).await {
-                let mut names = Vec::new();
-                if let Some(nick) = &member.nick {
-                    names.push(nick.clone());
-                }
-                if let Some(global_name) = &member.user.global_name {
-                    names.push(global_name.clone());
-                }
-                names.push(member.user.name.clone());
-                user_id_map.insert(user_id_str.clone(), names);
-            }
-        }
-    }
 
     // Kick the user
-    match queue_manager.kick_user(&guild_id, &channel_id, username, &user_id_map) {
+    match queue_manager.kick_user(&guild_id, &channel_id, &target_id.to_string()) {
         QueueOperationResult::Success {
             users,
             waitlist,
@@ -704,20 +651,14 @@ pub async fn handle_kick_command(
                 error!("Failed to edit message: {:?}", e);
             }
 
-            // Send confirmation, naming whichever user is no longer in the queue.
-            let kicked_user = user_id_map
-                .iter()
-                .find(|(id, _)| !users.contains(id) && !waitlist.contains(id))
-                .and_then(|(_, names)| names.first())
-                .map(|name| name.as_str())
-                .unwrap_or(username);
-
+            // Send confirmation. The response is ephemeral, so the mention is
+            // only visible to the command invoker and won't ping the target.
             let _ = command
                 .create_response(
                     &ctx.http,
                     serenity::builder::CreateInteractionResponse::Message(
                         CreateInteractionResponseMessage::new()
-                            .content(format!("Kicked {} from the queue", kicked_user))
+                            .content(format!("Kicked <@{}> from the queue", target_id))
                             .ephemeral(true),
                     ),
                 )
@@ -807,110 +748,89 @@ pub async fn handle_kick_command(
     }
 }
 
-/// Handles autocomplete for the `/kick` command username parameter.
-/// Returns a list of users currently in the queue that match the typed input.
-pub async fn handle_kick_autocomplete(
-    autocomplete: &CommandInteraction,
-    ctx: &Context,
-    queue_manager: &mut QueueManager,
-) {
-    let guild_id = match autocomplete.guild_id {
-        Some(id) => id.to_string(),
+/// Handles the `/shame` slash command, posting a for-fun embed that names the
+/// shamer, the shamed user, and the reason.
+pub async fn handle_shame_command(command: &CommandInteraction, ctx: &Context) {
+    let target_id = command.data.options.iter().find_map(|opt| {
+        if opt.name == "user" {
+            opt.value.as_user_id()
+        } else {
+            None
+        }
+    });
+
+    let reason = command
+        .data
+        .options
+        .iter()
+        .find(|opt| opt.name == "reason")
+        .and_then(|opt| opt.value.as_str())
+        .unwrap_or("");
+
+    let target_id = match target_id {
+        Some(id) => id.get(),
         None => {
-            // Not in a guild, can't provide autocomplete
-            let _ = autocomplete
+            let _ = command
                 .create_response(
                     &ctx.http,
-                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("Please specify a user to shame")
+                            .ephemeral(true),
+                    ),
                 )
                 .await;
             return;
         }
     };
-    let channel_id = autocomplete.channel_id.to_string();
 
-    // Get the current input value from autocomplete
-    let focused_value = autocomplete
-        .data
-        .autocomplete()
-        .map(|opt| opt.value)
-        .unwrap_or("");
-
-    // Check if a queue exists
-    let queue_exists = queue_manager
-        .queue_exists(&guild_id, &channel_id)
-        .unwrap_or(false);
-
-    if !queue_exists {
-        // No queue, return empty choices
-        let _ = autocomplete
+    if reason.trim().is_empty() {
+        let _ = command
             .create_response(
                 &ctx.http,
-                CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Please provide a reason")
+                        .ephemeral(true),
+                ),
             )
             .await;
         return;
     }
 
-    // Get all users in the queue
-    let all_users = match queue_manager.get_users(&guild_id, &channel_id) {
-        Ok(users) => users,
-        Err(_) => {
-            let _ = autocomplete
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
-                )
-                .await;
-            return;
-        }
-    };
+    let shamer_id = command.user.id.get();
 
-    // Build a list of usernames for autocomplete
-    let guild_id_parsed = match guild_id.parse::<u64>() {
-        Ok(id) => serenity::all::GuildId::new(id),
-        Err(_) => {
-            let _ = autocomplete
-                .create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Autocomplete(CreateAutocompleteResponse::new()),
-                )
-                .await;
-            return;
-        }
-    };
-
-    let mut choices = Vec::new();
-    let focused_lower = focused_value.to_lowercase();
-
-    for user_id_str in &all_users {
-        if let Ok(uid) = user_id_str.parse::<u64>() {
-            let user_id = serenity::all::UserId::new(uid);
-            if let Ok(member) = guild_id_parsed.member(&ctx.http, user_id).await {
-                // Try display name first, then username
-                let display_name = if let Some(nick) = &member.nick {
-                    nick.clone()
-                } else {
-                    member.user.name.clone()
-                };
-
-                // Filter by the focused input (case-insensitive)
-                if focused_value.is_empty() || display_name.to_lowercase().contains(&focused_lower)
-                {
-                    choices.push(AutocompleteChoice::new(display_name.clone(), display_name));
-
-                    // Discord limits autocomplete to 25 choices
-                    if choices.len() >= 25 {
-                        break;
-                    }
-                }
-            }
-        }
+    if let Err(e) = command
+        .channel_id
+        .send_message(
+            &ctx.http,
+            messages::create_shame_message(shamer_id, target_id, reason),
+        )
+        .await
+    {
+        error!("Failed to send shame message: {:?}", e);
+        let _ = command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Failed to send shame message")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
     }
 
-    let response = CreateAutocompleteResponse::new().set_choices(choices);
-
-    let _ = autocomplete
-        .create_response(&ctx.http, CreateInteractionResponse::Autocomplete(response))
+    // Acknowledge the command privately so it doesn't show a "failed" state.
+    let _ = command
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Shamed.")
+                    .ephemeral(true),
+            ),
+        )
         .await;
 }

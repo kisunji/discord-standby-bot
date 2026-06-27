@@ -54,12 +54,34 @@ impl EventHandler for Handler {
                 .description(config::COMMAND_KICK_DESC)
                 .add_option(
                     CreateCommandOption::new(
-                        CommandOptionType::String,
-                        "username",
-                        "Username, display name, or @mention of the user to kick",
+                        CommandOptionType::User,
+                        "user",
+                        "The user to kick from the queue",
                     )
-                    .required(true)
-                    .set_autocomplete(true),
+                    .required(true),
+                ),
+        )
+        .await;
+
+        let _ = serenity::all::Command::create_global_command(
+            &ctx.http,
+            CreateCommand::new(config::COMMAND_SHAME)
+                .description(config::COMMAND_SHAME_DESC)
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::User,
+                        "user",
+                        "The user to shame",
+                    )
+                    .required(true),
+                )
+                .add_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "reason",
+                        "Why they deserve to be shamed",
+                    )
+                    .required(true),
                 ),
         )
         .await;
@@ -78,15 +100,10 @@ impl EventHandler for Handler {
                     handlers::handle_bump_command(&command, &ctx, &mut queue_manager).await;
                 } else if command.data.name == config::COMMAND_KICK {
                     handlers::handle_kick_command(&command, &ctx, &mut queue_manager).await;
+                } else if command.data.name == config::COMMAND_SHAME {
+                    handlers::handle_shame_command(&command, &ctx).await;
                 } else {
                     warn!("Unknown slash command: {}", command.data.name);
-                }
-            }
-            Interaction::Autocomplete(autocomplete) => {
-                let mut queue_manager = self.queue_manager.lock().await;
-                
-                if autocomplete.data.name == config::COMMAND_KICK {
-                    handlers::handle_kick_autocomplete(&autocomplete, &ctx, &mut queue_manager).await;
                 }
             }
             Interaction::Component(component) => {
