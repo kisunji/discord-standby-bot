@@ -1,8 +1,14 @@
 //! Interaction handlers for Discord commands and button clicks.
 
-use serenity::all::{CommandInteraction, ComponentInteraction, Context, MessageId};
+use serenity::all::{
+    CommandInteraction, ComponentInteraction, ComponentInteractionDataKind, Context,
+    CreateActionRow, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, MessageId,
+    RoleId,
+};
 use serenity::builder::{CreateInteractionResponse, CreateInteractionResponseMessage};
 use tracing::error;
+
+use crate::config;
 
 use crate::messages;
 use crate::queue::{QueueManager, QueueOperationResult};
@@ -853,6 +859,127 @@ pub async fn handle_shame_command(command: &CommandInteraction, ctx: &Context) {
             CreateInteractionResponse::Message(
                 CreateInteractionResponseMessage::new()
                     .content("Shamed.")
+                    .ephemeral(true),
+            ),
+        )
+        .await;
+}
+
+/// Handles the `/rank` slash command by presenting an ephemeral rank picker.
+/// The actual role assignment happens when the user makes a selection, handled
+/// by [`handle_rank_select`].
+pub async fn handle_rank_command(command: &CommandInteraction, ctx: &Context) {
+    let menu = CreateSelectMenu::new(
+        config::RANK_SELECT_ID,
+        CreateSelectMenuKind::String {
+            options: vec![
+                CreateSelectMenuOption::new("Challenger", "challenger").emoji('🏆'),
+                CreateSelectMenuOption::new("Diamond", "diamond").emoji('💎'),
+                CreateSelectMenuOption::new("Plat", "plat").emoji('🔷'),
+                CreateSelectMenuOption::new("Gold", "gold").emoji('🥇'),
+                CreateSelectMenuOption::new("Silver", "silver").emoji('🥈'),
+            ],
+        },
+    )
+    .placeholder("Select your rank");
+
+    let _ = command
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("Pick your rank:")
+                    .components(vec![CreateActionRow::SelectMenu(menu)])
+                    .ephemeral(true),
+            ),
+        )
+        .await;
+}
+
+/// Handles a selection from the `/rank` picker. Assigns the chosen rank role
+/// (removing any other rank role to keep ranks mutually exclusive), or fires the
+/// silver easter egg.
+pub async fn handle_rank_select(component: &ComponentInteraction, ctx: &Context) {
+    let selected = match &component.data.kind {
+        ComponentInteractionDataKind::StringSelect { values } => values.first().cloned(),
+        _ => None,
+    };
+    let Some(selected) = selected else {
+        return;
+    };
+
+    // Easter egg: silver gets no role.
+    if selected == "silver" {
+        rank_reply(component, ctx, "No role for silver haha").await;
+        return;
+    }
+
+    let (role_id, label) = match selected.as_str() {
+        "challenger" => (config::RANK_CHALLENGER_ROLE_ID, "Challenger"),
+        "diamond" => (config::RANK_DIAMOND_ROLE_ID, "Diamond"),
+        "plat" => (config::RANK_PLAT_ROLE_ID, "Plat"),
+        "gold" => (config::RANK_GOLD_ROLE_ID, "Gold"),
+        other => {
+            error!("Unknown rank selection: {other}");
+            return;
+        }
+    };
+
+    let Some(guild_id) = component.guild_id else {
+        return;
+    };
+    let user_id = component.user.id;
+
+    // Remove any other rank roles the member currently holds so ranks stay
+    // mutually exclusive.
+    let current_roles = component
+        .member
+        .as_ref()
+        .map(|m| m.roles.clone())
+        .unwrap_or_default();
+    for other in config::RANK_ROLE_IDS {
+        if other != role_id && current_roles.iter().any(|r| r.get() == other) {
+            if let Err(e) = ctx
+                .http
+                .remove_member_role(guild_id, user_id, RoleId::new(other), Some("rank change"))
+                .await
+            {
+                error!("Failed to remove rank role {other}: {e:?}");
+            }
+        }
+    }
+
+    match ctx
+        .http
+        .add_member_role(
+            guild_id,
+            user_id,
+            RoleId::new(role_id),
+            Some("self-assigned rank"),
+        )
+        .await
+    {
+        Ok(()) => rank_reply(component, ctx, &format!("You are now **{label}**")).await,
+        Err(e) => {
+            error!("Failed to assign rank role {role_id}: {e:?}");
+            rank_reply(
+                component,
+                ctx,
+                "Failed to assign the role. The bot may be missing permissions.",
+            )
+            .await;
+        }
+    }
+}
+
+/// Sends an ephemeral reply in response to a rank selection.
+async fn rank_reply(component: &ComponentInteraction, ctx: &Context, content: &str) {
+    let _ = component
+        .create_response(
+            &ctx.http,
+            CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content(content)
                     .ephemeral(true),
             ),
         )

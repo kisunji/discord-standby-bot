@@ -86,6 +86,13 @@ impl EventHandler for Handler {
         )
         .await;
 
+        let _ = serenity::all::Command::create_global_command(
+            &ctx.http,
+            CreateCommand::new(config::COMMAND_RANK)
+                .description(config::COMMAND_RANK_DESC),
+        )
+        .await;
+
         info!("Global slash commands registered");
     }
 
@@ -102,12 +109,21 @@ impl EventHandler for Handler {
                     handlers::handle_kick_command(&command, &ctx, &mut queue_manager).await;
                 } else if command.data.name == config::COMMAND_SHAME {
                     handlers::handle_shame_command(&command, &ctx).await;
+                } else if command.data.name == config::COMMAND_RANK {
+                    handlers::handle_rank_command(&command, &ctx).await;
                 } else {
                     warn!("Unknown slash command: {}", command.data.name);
                 }
             }
             Interaction::Component(component) => {
                 let custom_id = &component.data.custom_id;
+
+                // Rank picker sends its own response, so handle it before the
+                // blanket acknowledge below.
+                if custom_id == config::RANK_SELECT_ID {
+                    handlers::handle_rank_select(&component, &ctx).await;
+                    return;
+                }
 
                 let _ = component
                     .create_response(

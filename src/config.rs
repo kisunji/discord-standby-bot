@@ -44,3 +44,28 @@ pub const NOVERLAP_USER_ID: u64 = 88437130354774016;
 
 /// Discord role ID barred from using the shame command.
 pub const SHAME_BANNED_ROLE_ID: u64 = 1524589988636000326;
+
+/// Slash command name for self-assigning a rank role.
+pub const COMMAND_RANK: &str = "rank";
+
+/// Description shown in Discord for the rank command.
+pub const COMMAND_RANK_DESC: &str = "Assign yourself a rank role";
+
+/// Custom ID for the rank select menu component.
+pub const RANK_SELECT_ID: &str = "rank_select";
+
+/// Role IDs for each self-assignable rank. Silver is intentionally absent
+/// (easter egg: choosing silver assigns no role).
+pub const RANK_CHALLENGER_ROLE_ID: u64 = 832255188932100126;
+pub const RANK_DIAMOND_ROLE_ID: u64 = 212760128078741504;
+pub const RANK_PLAT_ROLE_ID: u64 = 178349128873410560;
+pub const RANK_GOLD_ROLE_ID: u64 = 166651711346311168;
+
+/// All assignable rank role IDs, used to keep ranks mutually exclusive by
+/// removing the others when a new rank is chosen.
+pub const RANK_ROLE_IDS: [u64; 4] = [
+    RANK_CHALLENGER_ROLE_ID,
+    RANK_DIAMOND_ROLE_ID,
+    RANK_PLAT_ROLE_ID,
+    RANK_GOLD_ROLE_ID,
+];
