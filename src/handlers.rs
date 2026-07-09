@@ -751,6 +751,30 @@ pub async fn handle_kick_command(
 /// Handles the `/shame` slash command, posting a for-fun embed that names the
 /// shamer, the shamed user, and the reason.
 pub async fn handle_shame_command(command: &CommandInteraction, ctx: &Context) {
+    let is_banned = command
+        .member
+        .as_ref()
+        .is_some_and(|member| {
+            member
+                .roles
+                .iter()
+                .any(|role| role.get() == crate::config::SHAME_BANNED_ROLE_ID)
+        });
+
+    if is_banned {
+        let _ = command
+            .create_response(
+                &ctx.http,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("You are too noob to use this command")
+                        .ephemeral(true),
+                ),
+            )
+            .await;
+        return;
+    }
+
     let target_id = command.data.options.iter().find_map(|opt| {
         if opt.name == "user" {
             opt.value.as_user_id()

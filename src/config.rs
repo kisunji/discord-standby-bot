@@ -41,3 +41,6 @@ pub const COMMAND_SHAME_DESC: &str = "Publicly shame someone";
 
 /// Discord user ID of noverlap, who coded this bot. Shaming them backfires.
 pub const NOVERLAP_USER_ID: u64 = 88437130354774016;
+
+/// Discord role ID barred from using the shame command.
+pub const SHAME_BANNED_ROLE_ID: u64 = 1524589988636000326;
